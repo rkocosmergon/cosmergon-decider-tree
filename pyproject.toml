@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosmergon-decider-tree"
+version = "2.0.2"
+description = "Rule-based tree decider for Cosmergon api-agents (deterministic, no inference)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "RKO Consult UG (haftungsbeschraenkt)", email = "contact@cosmergon.de" },
+]
+keywords = ["cosmergon", "ai-agent", "decider", "behavior-tree", "rule-based"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "cosmergon-agent>=0.15.0,<0.16",
+]
+
+[project.entry-points."cosmergon.deciders"]
+tree = "cosmergon_decider_tree:TreeDecider"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
