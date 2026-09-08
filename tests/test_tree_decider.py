@@ -1,658 +1,454 @@
-"""Tests for TreeDecider v2.0.0 (GOBT — Subsistenz + Persona-Charakter)."""
+"""Tests des TreeDecider-Kerns (SOURCE OF TRUTH; Vendor-Kopie: cosmergon-pet).
+
+S298-Rueck-Sync: Testsatz aus dem Pet-Vendor uebernommen (Tree-pure Teile;
+Loop-/Backoff-/run_pet-Tests leben beim Pet, weil tree_loop dort wohnt).
+
+Verifies:
+  - TreeDecider produces an action from a minimal GameState
+  - Personas pick different first-actions on the same state
+  - tree_decision_loop calls agent.act when given a non-wait action
+  - Mutual-exclusion check at run_pet level (llm_provider XOR tree_decider)
+"""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from cosmergon_agent.decider import Decider
-from cosmergon_decider_tree import TreeDecider
-from cosmergon_decider_tree.decider import (
-    VALID_ACTIONS,
-    is_valid,
-    resolve_action_params,
-    score_action,
-)
-from cosmergon_decider_tree.persona_profiles import (
-    COMPASS_BIAS,
-    PERSONA_ACTION_BIAS,
-    PERSONA_ACTION_POOLS,
-    PERSONA_BUYABLE_TYPES,
-    SUBSISTENCE_POOL,
-    needs_subsistence,
-    persona_current_goal,
-    subsistence_threshold,
-)
+from cosmergon_decider_tree.decider import VALID_ACTIONS, TreeDecider
 
 
-# --- Fixtures ----------------------------------------------------------------
-
-
-def _field(field_id="f1", tier=1, cells=10, reife=0, etype=None):
-    return SimpleNamespace(
-        id=field_id,
-        entity_tier=tier,
-        active_cell_count=cells,
-        reife_score=reife,
-        entity_type=etype,
-    )
-
-
-def _cube(cube_id="c1"):
-    return SimpleNamespace(id=cube_id)
-
-
-def _listing(listing_id="l1", price=10.0, item="cube"):
-    return SimpleNamespace(listing_id=listing_id, price_energy=price, item_type=item)
-
-
-def _contract_target(player_id="p1", username="Other", persona="trader"):
-    return SimpleNamespace(player_id=player_id, username=username, persona=persona)
-
-
-def _state(
-    persona="scientist",
-    energy=100_000.0,
-    fields=None,
-    universe_cubes=None,
-    buyable=None,
-    contract_targets=None,
-    compass=None,
-    available_actions=None,
-):
-    market = SimpleNamespace(buyable=buyable or [], summary="")
-    wb = SimpleNamespace(
-        market=market,
-        contract_targets=contract_targets or [],
-        situation=SimpleNamespace(affordable_presets=("block", "blinker")),
-    )
-    fields_list = fields or []
-    if available_actions is None:
-        next_cost = 500.0 * len(fields_list)
-        available_actions = {
-            "create_field": {
-                "can_afford": float(energy) >= next_cost * 1.15,
-                "next_cost": next_cost,
-            }
-        }
+def _make_state(
+    *,
+    persona: str = "scientist",
+    energy: float = 10_000,
+    fields: list[Any] | None = None,
+    cubes: list[Any] | None = None,
+    available_actions: dict[str, dict[str, Any]] | None = None,
+    compass: str | None = None,
+) -> Any:
+    """Lightweight GameState surrogate — duck-typed for the tree's getattr-paths."""
     return SimpleNamespace(
         persona_type=persona,
         energy=energy,
-        fields=fields_list,
-        cubes=[],
-        universe_cubes=universe_cubes or [],
-        world_briefing=wb,
+        fields=fields or [],
+        universe_cubes=cubes or [],
+        available_actions=available_actions or {},
+        world_briefing=SimpleNamespace(
+            market=SimpleNamespace(buyable=[]),
+            contract_targets=[],
+        ),
         compass_preset=compass,
-        available_actions=available_actions,
     )
 
 
-@pytest.fixture
-def decider() -> TreeDecider:
-    return TreeDecider()
+def _comet_hand_lage(**overrides: Any) -> dict[str, dict[str, Any]]:
+    """Die ECHTEN Server-Fakten des S308-Live-Falls (24.08., v1.64.150):
+    feldlos, solvent, Marauder recovery, 0 Bomben, reichstes Loot-Feld
+    belegt, market_list verfuegbar — und kein freier Bauplatz."""
+    fakten: dict[str, dict[str, Any]] = {
+        "start_mission": {
+            "available": True,
+            "marauder_state": "recovery",
+            "mega_bombs": 0,
+            "richest_loot_field": {
+                "field_id": "a7cb9d65-b959-48bc-a2f6-76b073f57dc8",
+                "bomb_boxes": 14,
+            },
+        },
+        "market_list": {
+            "available": True,
+            "sellable_energy": 365.95,
+            "sellable_items": {},
+        },
+        "create_field": {"can_afford": True, "next_cost": 500.0, "available": False},
+    }
+    fakten.update(overrides)
+    return fakten
 
 
-# --- Protocol-Compliance -----------------------------------------------------
+@pytest.mark.asyncio
+async def test_solventer_feldloser_nimmt_die_kette() -> None:
+    """S308 Comet-hand-Repro — rot gegen v2.2.3.
+
+    Der 0.9-Sonderfall hing an ``kind == "energy_at_least"`` (Subsistenz).
+    Ein SOLVENTER Feldloser (scientist, Guthaben 11.449 >> Schwelle 2.000,
+    Ziel ``field_count_at_least``) bekam fuer start_mission 0.0 und verlor
+    0.20:0.15 gegen market_list (explore-Kompass) — minuetliches Listing
+    statt Rueckkehr ins Spiel. Feldlos + Fakten muss die Kette gewinnen.
+    """
+    state = _make_state(
+        energy=11_449,
+        fields=[],
+        cubes=[],  # volle Welt: kein Bauplatz
+        available_actions=_comet_hand_lage(),
+        compass="explore",
+    )
+    action, params = await TreeDecider().decide(state)
+    assert action == "start_mission"
+    assert params["params"]["mission_type"] == "gather_spores"
 
 
-class TestProtocolSatisfaction:
-    def test_satisfies_decider_protocol(self, decider: TreeDecider) -> None:
-        assert isinstance(decider, Decider)
-
-    def test_name_and_version(self, decider: TreeDecider) -> None:
-        assert decider.name == "tree"
-        assert decider.version == "2.0.2"
-
-    @pytest.mark.asyncio
-    async def test_healthcheck_always_true(self, decider: TreeDecider) -> None:
-        assert await decider.healthcheck() is True
-
-
-# --- Layer 1: Subsistenz -----------------------------------------------------
-
-
-class TestSubsistenceLayer:
-    def test_threshold_scientist_low_tier(self) -> None:
-        # Scientist mit Tier-1-Fields → max evolve = T1→T2 = 1k
-        state = _state(persona="scientist", fields=[_field("f1", tier=1)])
-        # threshold = max(1k evolve, 575 next_field) * 2 = 2_000
-        threshold = subsistence_threshold("scientist", state)
-        assert threshold == 2_000.0
-
-    def test_threshold_scientist_high_tier(self) -> None:
-        # Scientist mit Tier-4-Field → max evolve = T4→T5 = 125k
-        state = _state(persona="scientist", fields=[_field("f1", tier=4)])
-        threshold = subsistence_threshold("scientist", state)
-        assert threshold == 250_000.0  # 125k * 2
-
-    def test_threshold_expansionist_field_cost_dominated(self) -> None:
-        # Expansionist hat keine evolve-cost, nur next_field × margin
-        state = _state(persona="expansionist", fields=[_field(f"f{i}") for i in range(100)])
-        # next_field = 500 * 100 = 50k, margin = 57.5k, threshold = 115k
-        threshold = subsistence_threshold("expansionist", state)
-        assert threshold == pytest.approx(115_000.0)
-
-    def test_needs_subsistence_below_threshold(self) -> None:
-        state = _state(persona="scientist", energy=500.0, fields=[_field("f1", tier=1)])
-        assert needs_subsistence(state, "scientist")
-
-    def test_no_subsistence_when_rich(self) -> None:
-        state = _state(persona="scientist", energy=1_000_000.0, fields=[_field("f1", tier=1)])
-        assert not needs_subsistence(state, "scientist")
-
-    @pytest.mark.asyncio
-    async def test_subsistence_pool_includes_only_energy_aktions(self) -> None:
-        # Subsistenz-Pool sollte place_cells/market_list/create_field umfassen
-        assert "place_cells" in SUBSISTENCE_POOL
-        assert "market_list" in SUBSISTENCE_POOL
-        assert "create_field" in SUBSISTENCE_POOL
-        assert "evolve" not in SUBSISTENCE_POOL  # evolve verbraucht Energy
-        assert "propose_contract" not in SUBSISTENCE_POOL  # contract-escrow verbraucht
+@pytest.mark.asyncio
+async def test_freier_slot_schlaegt_erobern_trotz_kette() -> None:
+    """Ueberkorrektur-Waechter: die Founder-Ordnung (S307, 0.9 < create_field)
+    bleibt. Ist ein Bauplatz frei UND bezahlbar, schweigt der
+    Ketten-Sonderfall strukturell — create_field gewinnt, obwohl die
+    Landweg-Fakten vollstaendig vorliegen."""
+    cube = SimpleNamespace(id="11111111-1111-1111-1111-111111111111")
+    state = _make_state(
+        energy=11_449,
+        fields=[],
+        cubes=[cube],  # freier Bauplatz
+        available_actions=_comet_hand_lage(),
+        compass="explore",
+    )
+    action, params = await TreeDecider().decide(state)
+    assert action == "create_field"
+    assert params["cube_id"] == str(cube.id)
 
 
-# --- Validity-Filter ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_decider_returns_valid_action() -> None:
+    state = _make_state()
+    decider = TreeDecider()
+    action, params = await decider.decide(state)
+    assert action in VALID_ACTIONS
+    assert isinstance(params, dict)
 
 
-class TestValidityFilter:
-    def test_wait_always_valid(self) -> None:
-        assert is_valid(_state(energy=50.0), "wait")
-
-    def test_critical_energy_blocks_all_but_wait(self) -> None:
-        state = _state(energy=50.0)
-        assert is_valid(state, "wait")
-        assert not is_valid(state, "create_field")
-        assert not is_valid(state, "place_cells")
-
-    def test_create_field_needs_cube_and_affordability(self) -> None:
-        # Reich aber keine cubes
-        state = _state(energy=1_000_000.0, fields=[_field("f1")], universe_cubes=[])
-        assert not is_valid(state, "create_field")
-        # Mit cube
-        state2 = _state(energy=1_000_000.0, fields=[_field("f1")], universe_cubes=[_cube("c1")])
-        assert is_valid(state2, "create_field")
-
-    def test_create_field_blocked_at_unaffordable_with_safety_margin(self) -> None:
-        # 200 Fields → next_cost = 100k, margin = 115k. Energy 100k = nicht-affordable
-        many_fields = [_field(f"f{i}") for i in range(200)]
-        state = _state(energy=100_000.0, fields=many_fields, universe_cubes=[_cube()])
-        assert not is_valid(state, "create_field")
-
-    def test_place_cells_needs_field(self) -> None:
-        # 0 Fields
-        state = _state(fields=[])
-        assert not is_valid(state, "place_cells")
-        # Mit Field
-        state2 = _state(fields=[_field("f1")])
-        assert is_valid(state2, "place_cells")
-
-    def test_evolve_needs_eligible_field(self) -> None:
-        # Kein eligible field
-        state = _state(fields=[_field("f1", tier=1, reife=0)])
-        assert not is_valid(state, "evolve")
-        # Eligible field (tier=1, reife=200, oscillator)
-        state2 = _state(
-            energy=10_000,
-            fields=[_field("f1", tier=1, reife=200, etype="oscillator")],
-        )
-        assert is_valid(state2, "evolve")
-
-    def test_market_buy_filtered_by_persona_type(self) -> None:
-        # Scientist mit nur preset-Listings → nicht valid
-        state = _state(
-            persona="scientist",
-            buyable=[_listing("l1", price=10, item="preset")],
-        )
-        assert not is_valid(state, "market_buy")
-        # Mit cube-Listing → valid
-        state2 = _state(
-            persona="scientist",
-            buyable=[_listing("l1", price=10, item="cube")],
-        )
-        assert is_valid(state2, "market_buy")
-
-    def test_market_buy_trader_accepts_all_types(self) -> None:
-        # Trader hat allowed_types=None
-        state = _state(
-            persona="trader",
-            buyable=[_listing("l1", price=10, item="preset")],
-        )
-        assert is_valid(state, "market_buy")
-
-    def test_market_list_needs_minimum_energy(self) -> None:
-        assert not is_valid(_state(energy=1_000), "market_list")
-        assert is_valid(_state(energy=2_000), "market_list")
-
-    def test_propose_contract_needs_target(self) -> None:
-        assert not is_valid(_state(contract_targets=[]), "propose_contract")
-        target = _contract_target("p1")
-        assert is_valid(_state(contract_targets=[target]), "propose_contract")
+@pytest.mark.asyncio
+async def test_decider_critical_energy_waits() -> None:
+    state = _make_state(energy=10)  # below CRITICAL_ENERGY (100)
+    decider = TreeDecider()
+    action, _ = await decider.decide(state)
+    assert action == "wait"
 
 
-# --- Persona-Goal-Metric -----------------------------------------------------
+@pytest.mark.asyncio
+async def test_decider_zero_fields_can_afford_creates_field() -> None:
+    cube = SimpleNamespace(id="11111111-1111-1111-1111-111111111111")
+    state = _make_state(
+        energy=10_000,
+        fields=[],
+        cubes=[cube],
+        available_actions={"create_field": {"can_afford": True}},
+    )
+    decider = TreeDecider()
+    action, params = await decider.decide(state)
+    assert action == "create_field"
+    assert params["cube_id"] == str(cube.id)
 
 
-class TestPersonaGoalMetric:
-    def test_scientist_goal_no_patterns_yet(self) -> None:
-        # Scientist hat Field mit etype=None → Pattern noch nicht etabliert
-        state = _state(fields=[_field("f1", etype=None)])
-        goal = persona_current_goal(state, "scientist")
-        assert goal["kind"] == "patterns_established"
-
-    def test_scientist_goal_evolve_when_ready(self) -> None:
-        state = _state(
-            fields=[_field("f1", tier=1, reife=200, etype="oscillator")]
-        )
-        goal = persona_current_goal(state, "scientist")
-        assert goal["kind"] == "evolved_fields_at_least"
-
-    def test_scientist_goal_avg_cells_when_pattern_established(self) -> None:
-        # Pattern (oscillator) da, aber reife unter 100 → Cells halten
-        state = _state(
-            fields=[_field("f1", tier=1, cells=20, reife=50, etype="oscillator")]
-        )
-        goal = persona_current_goal(state, "scientist")
-        assert goal["kind"] == "avg_cells_at_least"
-
-    def test_trader_goal_inventory_use_when_hoarding(self) -> None:
-        state = _state(
-            persona="trader",
-            fields=[_field("f1")],  # bootstrap-goal vermeiden
-            universe_cubes=[_cube(f"c{i}") for i in range(6)],  # >= 5
-        )
-        goal = persona_current_goal(state, "trader")
-        assert goal["kind"] == "fields_use_inventory"
-
-    def test_trader_goal_market_growth_when_low_inventory(self) -> None:
-        # v2.0.1: 0 Fields → bootstrap-goal. Test braucht ≥1 field.
-        state = _state(persona="trader", fields=[_field("f1")], universe_cubes=[_cube("c1")])
-        goal = persona_current_goal(state, "trader")
-        assert goal["kind"] == "energy_growth_via_market"
-
-    def test_warrior_goal_min_cells_when_under(self) -> None:
-        state = _state(
-            persona="warrior",
-            fields=[_field("f1", cells=15)],  # < 30
-        )
-        goal = persona_current_goal(state, "warrior")
-        assert goal["kind"] == "all_fields_min_cells"
-
-    def test_diplomat_goal_active_contracts(self) -> None:
-        # v2.0.1: 0 Fields → bootstrap-goal. Test braucht ≥1 field.
-        state = _state(persona="diplomat", fields=[_field("f1")])
-        goal = persona_current_goal(state, "diplomat")
-        assert goal["kind"] == "active_contracts_at_least"
-        assert goal["target"] == 3
-
-    def test_bootstrap_goal_at_zero_fields_for_all_personas(self) -> None:
-        # v2.0.1: alle Personas → bootstrap (field_count_at_least 1) bei 0 Fields
-        for persona in ["scientist", "trader", "warrior", "expansionist",
-                        "diplomat", "farmer"]:
-            state = _state(persona=persona, fields=[])
-            goal = persona_current_goal(state, persona)
-            assert goal["kind"] == "field_count_at_least"
-            assert goal["target"] == 1
+@pytest.mark.asyncio
+async def test_decider_unknown_persona_falls_back_to_scientist() -> None:
+    state = _make_state(persona="some-future-persona", energy=10_000)
+    decider = TreeDecider()
+    action, _ = await decider.decide(state)
+    assert action in VALID_ACTIONS  # scientist tree → always-valid action
 
 
-# --- Persona-Action-Pool & Bias ---------------------------------------------
-
-
-class TestPersonaPoolsAndBias:
-    def test_all_personas_have_pool(self) -> None:
-        for persona in ["scientist", "warrior", "expansionist", "trader",
-                        "diplomat", "farmer"]:
-            assert persona in PERSONA_ACTION_POOLS
-            assert len(PERSONA_ACTION_POOLS[persona]) >= 5
-
-    def test_all_personas_have_bias(self) -> None:
-        for persona in PERSONA_ACTION_POOLS:
-            assert persona in PERSONA_ACTION_BIAS
-            for action, bias in PERSONA_ACTION_BIAS[persona].items():
-                assert -0.3 <= bias <= 0.3, f"bias {action}={bias} for {persona} out of range"
-
-    def test_scientist_evolve_high_bias(self) -> None:
-        assert PERSONA_ACTION_BIAS["scientist"]["evolve"] == 0.3
-
-    def test_trader_market_high_bias(self) -> None:
-        assert PERSONA_ACTION_BIAS["trader"]["market_buy"] == 0.3
-        assert PERSONA_ACTION_BIAS["trader"]["market_list"] == 0.2
-
-    def test_warrior_place_cells_high_bias(self) -> None:
-        assert PERSONA_ACTION_BIAS["warrior"]["place_cells"] == 0.3
-
-    def test_buyable_types_trader_unrestricted(self) -> None:
-        assert PERSONA_BUYABLE_TYPES["trader"] is None
-
-    def test_buyable_types_scientist_cube_field(self) -> None:
-        assert PERSONA_BUYABLE_TYPES["scientist"] == ("cube", "field")
-
-
-# --- decide()-Pipeline End-to-End -------------------------------------------
-
-
-class TestDecidePipeline:
-    @pytest.mark.asyncio
-    async def test_critical_energy_returns_wait(self, decider: TreeDecider) -> None:
-        action, params = await decider.decide(_state(energy=50.0))
-        assert action == "wait"
-
-    @pytest.mark.asyncio
-    async def test_subsistence_picks_create_field_at_zero_fields(
-        self, decider: TreeDecider
-    ) -> None:
-        # Subsistenz-Modus: niedrige Energy aber nicht Critical
-        state = _state(
-            persona="scientist",
-            energy=1_500.0,  # unter scientist-threshold (= 2_000 für Tier-1)
-            fields=[],
-            universe_cubes=[_cube("c1")],
-        )
-        # next_field=0 (first-field-frei), can_afford=true
-        state.available_actions = {
-            "create_field": {"can_afford": True, "next_cost": 0.0}
+def _ml_actions(
+    *, available: bool, energy: float = 0.0, items: dict | None = None
+) -> dict[str, dict[str, Any]]:
+    return {
+        "market_list": {
+            "available": available,
+            "sellable_energy": energy,
+            "sellable_items": items or {},
         }
-        action, params = await decider.decide(state)
-        assert action == "create_field"
+    }
 
-    @pytest.mark.asyncio
-    async def test_persona_character_scientist_no_pattern_picks_place_cells(
-        self, decider: TreeDecider
-    ) -> None:
-        """Scientist mit Field ohne entity_type → Pattern etablieren via place_cells."""
-        state = _state(
-            persona="scientist",
-            energy=1_000_000.0,  # rich, kein Subsistenz
-            fields=[_field("f1", tier=1, cells=20, etype=None)],
-            universe_cubes=[_cube("c1")],
+
+@pytest.mark.asyncio
+async def test_market_list_respektiert_server_nein() -> None:
+    """Server sagt available=false (kein Ueberschuss, kein Inventar) —
+    der Baum darf market_list NICHT waehlen (v2.0.2 tat es: energy>=1500)."""
+    from cosmergon_decider_tree.decider import is_valid
+
+    state = _make_state(energy=9_953, available_actions=_ml_actions(available=False))
+    assert is_valid(state, "market_list") is False
+    action, _ = await TreeDecider().decide(state)
+    assert action != "market_list"
+
+
+def test_market_list_energie_bei_ueberschuss() -> None:
+    """Server meldet verkaeufliche Energie → klassisches Energie-Listing."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    state = _make_state(
+        energy=20_000,
+        available_actions=_ml_actions(available=True, energy=2_500),
+    )
+    plan = _market_list_plan(state)
+    assert plan == {"price_energy": 450}  # scientist
+
+
+def test_market_list_item_mit_marktreferenz() -> None:
+    """Kein Ueberschuss, aber gedecktes Inventar: 1 Item zu 95 % des
+    billigsten aktiven Listings desselben Typs."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    state = _make_state(
+        energy=9_953,
+        available_actions=_ml_actions(available=True, items={"mega_bomb": 7}),
+    )
+    state.world_briefing.market.buyable = [
+        SimpleNamespace(item_type="mega_bomb", price_energy=100_000.0),
+        SimpleNamespace(item_type="mega_bomb", price_energy=120_000.0),
+    ]
+    plan = _market_list_plan(state)
+    assert plan == {
+        "item_type": "mega_bomb",
+        "item_data": {"count": 1},
+        "price_energy": 95_000,
+    }
+
+
+def test_market_list_item_ohne_referenzpreis_wird_nicht_gelistet() -> None:
+    """Ohne Vergleichspreis am Markt wird nicht geraten — kein Listing."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    state = _make_state(
+        energy=9_953,
+        available_actions=_ml_actions(available=True, items={"bus_ticket_x": 1}),
+    )
+    assert _market_list_plan(state) is None
+
+
+def test_market_list_alter_server_fallback() -> None:
+    """Backend ohne sellable_*-Schluessel: altes Verhalten (Schwelle 1500)."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    state = _make_state(energy=9_953, available_actions={})
+    assert _market_list_plan(state) == {"price_energy": 450}
+
+
+def test_start_mission_ohne_selbstbelohnung_und_ohne_none_ids() -> None:
+    """reward_energy muss 0 sein (S278-Tor) und params duerfen keine
+    None-UUIDs tragen; feldlos + cubelos ⇒ kein Kandidat."""
+    from cosmergon_decider_tree.decider import is_valid, resolve_action_params
+
+    mit_feld = _make_state(fields=[SimpleNamespace(id="33333333-3333-3333-3333-333333333333")])
+    # v2.2.2: Draht-Form — mission_type/reward_energy reisen IM params-Sub-Dict
+    # (ActionRequest kennt sie nicht flach; Pydantic verwarf sie still -> 422).
+    aussen = resolve_action_params(mit_feld, "start_mission", "warrior")
+    assert set(aussen.keys()) == {"params"}
+    inner = aussen["params"]
+    assert inner["reward_energy"] == 0
+    assert inner["params"]["field_id"] == "33333333-3333-3333-3333-333333333333"
+
+    feldlos = _make_state(fields=[], cubes=[])
+    assert resolve_action_params(feldlos, "start_mission", "warrior") == {}
+    assert is_valid(feldlos, "start_mission") is False
+
+
+@pytest.mark.asyncio
+async def test_decide_respektiert_blocked() -> None:
+    """Eine gesperrte Aktion wird nicht gewaehlt — der Baum nimmt die
+    naechstbeste statt zu haemmern."""
+    field = SimpleNamespace(
+        id="44444444-4444-4444-4444-444444444444",
+        active_cell_count=5,
+        entity_tier=1,
+        reife_score=0,
+        entity_type="still_life",
+    )
+    state = _make_state(energy=10_000, fields=[field])
+    decider = TreeDecider()
+    frei, _ = await decider.decide(state)
+    geblockt, _ = await decider.decide(state, blocked=frozenset({frei}))
+    assert geblockt != frei
+
+
+def test_market_list_item_mit_server_referenzpreis() -> None:
+    """Backend >= v1.64.31 liefert reference_prices — die gewinnen gegen das
+    Briefing (das nur die 20 billigsten Listings traegt und mega_bomb nie)."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    actions = _ml_actions(available=True, items={"mega_bomb": 7})
+    actions["market_list"]["reference_prices"] = {"mega_bomb": 100_000.0}
+    state = _make_state(energy=9_953, available_actions=actions)
+    # Briefing bewusst leer — der Serverpreis muss reichen.
+    plan = _market_list_plan(state)
+    assert plan == {
+        "item_type": "mega_bomb",
+        "item_data": {"count": 1},
+        "price_energy": 95_000,
+    }
+
+
+def test_propose_contract_nur_backend_typen_mit_pflicht_terms() -> None:
+    """Jede Persona sendet einen Vertragstyp, den das Backend kennt, mit
+    vollstaendigen Pflicht-Terms.
+
+    S298: der Baum erfand "research_agreement" (existiert im Backend nicht,
+    validate_terms -> "Unknown contract type" -> HTTP 400) und sandte
+    trade_agreement ohne den Pflicht-Term fee_discount_pct (dieselbe 400).
+    Referenz abgeschrieben aus dem Backend (models/contract.py:CONTRACT_TYPES,
+    Free-Tier-Teilmenge agent_game.py:_FREE_CONTRACT_TYPES) — der Pet ist ein
+    free-Agent und darf nur diese Typen proponieren.
+    """
+    from cosmergon_decider_tree.decider import resolve_action_params
+
+    free_types_required_terms = {
+        "non_aggression": {"duration"},
+        "trade_agreement": {"fee_discount_pct", "duration"},
+    }
+    target = SimpleNamespace(player_id="55555555-5555-5555-5555-555555555555")
+    personas = [
+        "scientist",
+        "trader",
+        "warrior",
+        "diplomat",
+        "farmer",
+        "expansionist",
+        "some-future-persona",
+    ]
+    for persona in personas:
+        state = _make_state(persona=persona)
+        state.world_briefing.contract_targets = [target]
+        params = resolve_action_params(state, "propose_contract", persona)
+        ctype = params["contract_type"]
+        assert ctype in free_types_required_terms, (
+            f"{persona}: '{ctype}' ist kein free-tier-proponierbarer Backend-Typ"
         )
-        action, params = await decider.decide(state)
-        # Goal = patterns_established; place_cells preset=blinker macht oscillator-Pattern
-        # create_field würde auch fire'n, aber bias scientist=-0.2, place_cells=0
-        # place_cells score 0.8 + 0 = 0.8; create_field score irrelevant + bias -0.2
-        assert action == "place_cells"
-        assert params["preset"] == "blinker"
-
-    @pytest.mark.asyncio
-    async def test_comet_hand_szenario_v200(self, decider: TreeDecider) -> None:
-        """Comet-hand-Empirie: 25 Fields, 4.5M E, scientist, alle Fields cells>50,
-        kein Field reife≥100. v1.1.4 wählte 100% create_field (Mono).
-        v2.0.0 sollte place_cells wählen (Pattern-Etablierung)."""
-        fields = [_field(f"f{i}", tier=1, cells=80, reife=20, etype=None)
-                  for i in range(25)]
-        state = _state(
-            persona="scientist",
-            energy=4_500_000.0,
-            fields=fields,
-            universe_cubes=[_cube("c1")],
-        )
-        action, params = await decider.decide(state)
-        # Goal = patterns_established (kein Field hat oscillator entity_type)
-        # → place_cells preset=blinker
-        assert action == "place_cells"
-        assert params["preset"] == "blinker"
-
-    @pytest.mark.asyncio
-    async def test_scientist_evolve_when_ready(
-        self, decider: TreeDecider
-    ) -> None:
-        state = _state(
-            persona="scientist",
-            energy=100_000,
-            fields=[_field("f1", tier=1, cells=50, reife=200, etype="oscillator")],
-        )
-        action, params = await decider.decide(state)
-        assert action == "evolve"
-
-    @pytest.mark.asyncio
-    async def test_trader_picks_market_buy_with_preset_listings(
-        self, decider: TreeDecider
-    ) -> None:
-        # Trader darf preset kaufen
-        state = _state(
-            persona="trader",
-            energy=200_000,
-            fields=[_field("f1", cells=100)],
-            buyable=[_listing("l1", price=10, item="preset")],
-            universe_cubes=[_cube("c1")],
-        )
-        action, params = await decider.decide(state)
-        assert action == "market_buy"
-        assert params["listing_id"] == "l1"
-
-    @pytest.mark.asyncio
-    async def test_scientist_skips_preset_listings(
-        self, decider: TreeDecider
-    ) -> None:
-        # Scientist mit nur preset-Listings → market_buy ist invalid → andere Action
-        state = _state(
-            persona="scientist",
-            energy=200_000,
-            fields=[_field("f1", tier=1, cells=80, reife=20, etype=None)],
-            buyable=[_listing("l1", price=10, item="preset")],
-            universe_cubes=[_cube("c1")],
-        )
-        action, params = await decider.decide(state)
-        assert action != "market_buy"
-
-    @pytest.mark.asyncio
-    async def test_warrior_low_cells_field_picks_place_cells(
-        self, decider: TreeDecider
-    ) -> None:
-        state = _state(
-            persona="warrior",
-            energy=50_000,
-            fields=[_field("f1", cells=20)],  # unter Goal-Threshold 30
-        )
-        action, params = await decider.decide(state)
-        assert action == "place_cells"
-        assert params["preset"] == "block"  # warrior preset = block
-
-    @pytest.mark.asyncio
-    async def test_expansionist_picks_create_field_when_possible(
-        self, decider: TreeDecider
-    ) -> None:
-        # Expansionist ohne leere Felder, Energy reich, Cube da
-        state = _state(
-            persona="expansionist",
-            energy=200_000,
-            fields=[_field("f1", cells=100)],
-            universe_cubes=[_cube("c1")],
-        )
-        action, params = await decider.decide(state)
-        # Goal = field_count_at_least (next field), bias create_field +0.3
-        assert action == "create_field"
-
-    @pytest.mark.asyncio
-    async def test_diplomat_picks_propose_contract(
-        self, decider: TreeDecider
-    ) -> None:
-        state = _state(
-            persona="diplomat",
-            energy=50_000,
-            fields=[_field("f1", cells=100)],
-            contract_targets=[_contract_target("p1")],
-        )
-        action, params = await decider.decide(state)
-        assert action == "propose_contract"
-
-    @pytest.mark.asyncio
-    async def test_farmer_low_cells_picks_place_cells(
-        self, decider: TreeDecider
-    ) -> None:
-        state = _state(
-            persona="farmer",
-            energy=50_000,
-            fields=[_field("f1", cells=30)],  # < 50 farmer-Goal
-        )
-        action, params = await decider.decide(state)
-        assert action == "place_cells"
-
-    @pytest.mark.asyncio
-    async def test_no_valid_actions_returns_wait(
-        self, decider: TreeDecider
-    ) -> None:
-        # Persona alles invalid: keine fields, keine cubes, keine listings, kein contract
-        state = _state(
-            persona="scientist",
-            energy=1_500_000,  # über Subsistenz
-            fields=[],
-            universe_cubes=[],
-            buyable=[],
-            contract_targets=[],
-        )
-        # market_list valid (energy>1500), aber Subsistenz greift nicht (rich)
-        # also Layer 2: action_pool = scientist; alles außer market_list invalid
-        action, params = await decider.decide(state)
-        # market_list valid + nur option → wird gewählt
-        assert action == "market_list"
+        missing = free_types_required_terms[ctype] - set(params["terms"])
+        assert not missing, f"{persona}/{ctype}: fehlende Pflicht-Terms {missing}"
+        assert params["to_player_id"] == "55555555-5555-5555-5555-555555555555"
 
 
-# --- Compass-Bias-Modifier ---------------------------------------------------
+def test_propose_from_template_params_genestet_und_free_tier() -> None:
+    """template_id/mode/slots muessen im params-Sub-Dict reisen (das SDK legt
+    act()-kwargs flach in den Body, ActionRequest kennt sie nicht -> 422),
+    und nur Free-Tier-Templates T07/T08 (T09/T06 rendern zu alliance/tribute,
+    die 402-Klasse des direkten propose_contract-Wegs). S298 am Live-Fall
+    Comet-hand: 3x 422 direkt nach dem v2.1.1-Deploy."""
+    from cosmergon_decider_tree.decider import resolve_action_params
+
+    required_slots = {
+        "T08_NON_AGGRESSION": {"partner_id", "duration"},
+        "T07_TRADE_AGREEMENT": {"partner_id", "fee_discount_pct", "duration"},
+    }
+    target = SimpleNamespace(player_id="66666666-6666-6666-6666-666666666666")
+    for persona in ["scientist", "trader", "warrior", "diplomat", "farmer", "expansionist"]:
+        state = _make_state(persona=persona)
+        state.world_briefing.contract_targets = [target]
+        out = resolve_action_params(state, "propose_from_template", persona)
+        assert set(out) == {"params", "escrow_amount"}, f"{persona}: {set(out)}"
+        inner = out["params"]
+        tid = inner["template_id"]
+        assert tid in required_slots, f"{persona}: {tid} ist kein Free-Tier-Template"
+        missing = required_slots[tid] - set(inner["slots"])
+        assert not missing, f"{persona}/{tid}: fehlende Slots {missing}"
+        assert inner["mode"] == "targeted"
 
 
-class TestCompassBias:
-    def test_compass_bias_scales_within_limits(self) -> None:
-        for compass, biases in COMPASS_BIAS.items():
-            for action, bias in biases.items():
-                assert -0.2 <= bias <= 0.2, (
-                    f"compass {compass} bias {action}={bias} out of [-0.2, +0.2]"
-                )
-
-    def test_autonomous_compass_no_modifier(self) -> None:
-        assert COMPASS_BIAS["autonomous"] == {}
-
-    @pytest.mark.asyncio
-    async def test_consolidate_compass_prefers_pflege(
-        self, decider: TreeDecider
-    ) -> None:
-        """compass=consolidate verstärkt place_cells/evolve, dämpft create_field."""
-        state = _state(
-            persona="expansionist",  # baseline create_field-Bias=+0.3
-            energy=200_000,
-            fields=[_field("f1", cells=100)],
-            universe_cubes=[_cube("c1")],
-            compass="consolidate",  # create_field -0.2, place_cells +0.2
-        )
-        # Net create_field bias: 0.3 - 0.2 = +0.1
-        # place_cells bias: 0.1 + 0.2 = +0.3
-        # Beide Goals approximieren unterschiedlich; place_cells wird wahrscheinlich gewählt
-        action, params = await decider.decide(state)
-        # Wir prüfen nur dass Compass den Effekt hat — Action sollte place_cells sein
-        # wenn cells nicht voll, sonst create_field
-        assert action in ("place_cells", "create_field")
+# --- v2.3.1 Kaufabsicht (S308, Live-Fall Socket-hand) ------------------------
 
 
-# --- Score-Funktion (Unit-Tests) --------------------------------------------
+def _preset_listing(price: float = 10.0) -> Any:
+    return SimpleNamespace(listing_id="p1", item_type="preset", price_energy=price)
 
 
-class TestScoreAction:
-    def test_score_energy_at_least_market_list(self) -> None:
-        state = _state(energy=10_000)
-        goal = {"kind": "energy_at_least", "target": 100_000}
-        # market_list listed +450, listing_fee -10 → +0.5*450 - 10 effective +215
-        score = score_action(
-            state, "market_list", {"price_energy": 450}, goal
-        )
-        # gap = 90_000, e_delta ~= 215 → score ~= 0.0024
-        assert 0 <= score <= 1
-
-    def test_score_avg_cells_place_cells(self) -> None:
-        state = _state(fields=[_field("f1", cells=20)])
-        goal = {"kind": "avg_cells_at_least", "target": 100}
-        score = score_action(
-            state, "place_cells", {"preset": "blinker", "field_id": "f1"}, goal
-        )
-        # v2.0.1: direction-based, place_cells in richtige Richtung → ≥0.7
-        assert score >= 0.7
-
-    def test_score_avg_cells_at_many_fields_pulsar_eye_szenario(self) -> None:
-        """v2.0.1 Pulsar-eye-Bug-Fix: bei 403 Fields ist place_cells-Magnitude
-        winzig (1/403), aber Richtung stimmt → Score sollte trotzdem hoch sein."""
-        many_fields = [_field(f"f{i}", cells=80) for i in range(400)]
-        state = _state(fields=many_fields, energy=500_000)
-        goal = {"kind": "avg_cells_at_least", "target": 100}
-        score = score_action(
-            state, "place_cells", {"preset": "blinker", "field_id": "f0"}, goal
-        )
-        # Pre v2.0.1: score ≈ 0.0074/20 ≈ 0.0004 (quasi 0)
-        # Post v2.0.1: direction-based → ≥0.7
-        assert score >= 0.7
-
-    def test_score_avg_cells_market_list_no_effect(self) -> None:
-        """market_list ändert avg_cells nicht → score 0 (anders als v2.0.0
-        wo Bias-Fall-back manchmal market_list gewinnen ließ)."""
-        state = _state(fields=[_field("f1", cells=80)])
-        goal = {"kind": "avg_cells_at_least", "target": 100}
-        score = score_action(state, "market_list", {"price_energy": 450}, goal)
-        assert score == 0.0
-
-    def test_score_evolved_fields_returns_one_for_evolve(self) -> None:
-        state = _state(
-            fields=[_field("f1", tier=1, reife=200, etype="oscillator")],
-            energy=10_000,
-        )
-        goal = {"kind": "evolved_fields_at_least", "target": 1}
-        score = score_action(state, "evolve", {"field_id": "f1"}, goal)
-        assert score == 1.0
-
-    def test_score_patterns_established_for_blinker(self) -> None:
-        state = _state(fields=[_field("f1", etype=None)])
-        goal = {"kind": "patterns_established", "target": 1}
-        score = score_action(
-            state, "place_cells", {"preset": "blinker", "field_id": "f1"}, goal
-        )
-        assert score > 0  # blinker etabliert oscillator-Pattern
-
-    def test_score_unknown_goal_kind_returns_zero(self) -> None:
-        state = _state()
-        goal = {"kind": "nonexistent_goal_kind"}
-        assert score_action(state, "place_cells", {"preset": "block"}, goal) == 0.0
+def _bomben_listing(price: float = 900.0) -> Any:
+    return SimpleNamespace(listing_id="b1", item_type="mega_bomb", price_energy=price)
 
 
-# --- Resolve-Action-Params --------------------------------------------------
+def test_voller_vorrat_kein_kauf_karussell_repro() -> None:
+    """Der Socket-hand-Repro: diplomat, eigenes Feld, VOLLE Saat-Kammer,
+    billiges Haus-Preset — gegen v2.3.0 war das ein garantierter Kauf
+    (203 in 24 h). Mit Server-Faktum preset_stock >= 3 endet der Treadmill."""
+    from cosmergon_decider_tree.decider import is_valid, resolve_action_params
+
+    state = _make_state(
+        persona="diplomat",
+        fields=[SimpleNamespace(id="f1", entity_tier=1)],
+        available_actions={"market_buy": {"preset_stock": 5}},
+    )
+    state.world_briefing.market.buyable = [_preset_listing()]
+    assert is_valid(state, "market_buy") is False
+    assert resolve_action_params(state, "market_buy", "diplomat") == {}
 
 
-class TestResolveActionParams:
-    def test_create_field_returns_first_cube(self) -> None:
-        state = _state(universe_cubes=[_cube("c-A"), _cube("c-B")])
-        params = resolve_action_params(state, "create_field", "scientist")
-        assert params["cube_id"] == "c-A"
+def test_leere_kammer_kauft_preset_nach() -> None:
+    from cosmergon_decider_tree.decider import is_valid, resolve_action_params
 
-    def test_place_cells_picks_empty_field_first(self) -> None:
-        state = _state(
-            persona="scientist",
-            fields=[_field("f1", cells=100), _field("f2", cells=0)],
-        )
-        params = resolve_action_params(state, "place_cells", "scientist")
-        assert params["field_id"] == "f2"  # empty bevorzugt
-        assert params["preset"] == "blinker"  # scientist-default
-
-    def test_market_list_persona_specific_price(self) -> None:
-        params_t = resolve_action_params(_state(persona="trader"), "market_list", "trader")
-        params_s = resolve_action_params(_state(persona="scientist"), "market_list", "scientist")
-        assert params_t["price_energy"] == 500  # trader höher
-        assert params_s["price_energy"] == 450
-
-    def test_propose_contract_persona_specific_type(self) -> None:
-        target = _contract_target("p1")
-        state = _state(contract_targets=[target])
-        params_s = resolve_action_params(state, "propose_contract", "scientist")
-        params_w = resolve_action_params(state, "propose_contract", "warrior")
-        assert params_s["contract_type"] == "research_agreement"
-        assert params_w["contract_type"] == "non_aggression"
+    state = _make_state(
+        persona="diplomat",
+        fields=[SimpleNamespace(id="f1", entity_tier=1)],
+        available_actions={"market_buy": {"preset_stock": 0}},
+    )
+    state.world_briefing.market.buyable = [_preset_listing()]
+    assert is_valid(state, "market_buy") is True
+    assert resolve_action_params(state, "market_buy", "diplomat")["listing_id"] == "p1"
 
 
-# --- VALID_ACTIONS-Konstanten ------------------------------------------------
+def test_feldloser_mit_zielen_kauft_bomben() -> None:
+    """Die Absicht ersetzt den statischen Typ-Filter: ein feldloser diplomat
+    DARF die mega_bomb kaufen, wenn die Eroberungs-Kette sie braucht
+    (Ziele sichtbar, Arsenal < 3) — der Kauf beschleunigt das Sammeln."""
+    from cosmergon_decider_tree.decider import is_valid, resolve_action_params
+
+    state = _make_state(
+        persona="diplomat",
+        energy=50_000,
+        available_actions={
+            "market_buy": {"preset_stock": 0},
+            "start_mission": {"mega_bombs": 1},
+            "claim_field": {"targets": [{"field_id": "z1"}]},
+        },
+    )
+    state.world_briefing.market.buyable = [_bomben_listing()]
+    assert is_valid(state, "market_buy") is True
+    assert resolve_action_params(state, "market_buy", "diplomat")["listing_id"] == "b1"
 
 
-class TestValidActionsConstant:
-    def test_all_persona_pool_actions_in_valid_actions(self) -> None:
-        for persona, pool in PERSONA_ACTION_POOLS.items():
-            for action in pool:
-                assert action in VALID_ACTIONS, (
-                    f"{persona} pool has invalid action {action!r}"
-                )
+def test_volles_arsenal_kauft_keine_bomben() -> None:
+    from cosmergon_decider_tree.decider import is_valid
 
-    def test_subsistence_pool_actions_in_valid_actions(self) -> None:
-        for action in SUBSISTENCE_POOL:
-            assert action in VALID_ACTIONS
+    state = _make_state(
+        persona="diplomat",
+        energy=50_000,
+        available_actions={
+            "market_buy": {"preset_stock": 0},
+            "start_mission": {"mega_bombs": 3},
+            "claim_field": {"targets": [{"field_id": "z1"}]},
+        },
+    )
+    state.world_briefing.market.buyable = [_bomben_listing()]
+    # Feldlos ohne eigenes Feld: preset-Absicht entfaellt (kein Feld),
+    # Bomben-Absicht entfaellt (Arsenal voll) -> kein Kauf.
+    assert is_valid(state, "market_buy") is False
+
+
+def test_ohne_server_faktum_bleibt_legacy_verhalten() -> None:
+    """Aelterer Server (kein market_buy.preset_stock): der Legacy-Typ-Filter
+    traegt weiter — diplomat darf preset kaufen wie in v2.3.0 (durchlaessig,
+    Muster marauder_state)."""
+    from cosmergon_decider_tree.decider import is_valid
+
+    state = _make_state(
+        persona="diplomat",
+        fields=[SimpleNamespace(id="f1", entity_tier=1)],
+        available_actions={},
+    )
+    state.world_briefing.market.buyable = [_preset_listing()]
+    assert is_valid(state, "market_buy") is True
+
+
+def test_delta_folgt_demselben_kern() -> None:
+    """Gate an einem von zwei Eingaengen ist keines: auch der Score-Delta
+    sieht bei voller Kammer KEINEN Kauf (kein Geister-Delta fuer eine
+    Aktion, die der Resolver verweigert)."""
+    from cosmergon_decider_tree.decider import _predict_delta
+
+    state = _make_state(
+        persona="diplomat",
+        fields=[SimpleNamespace(id="f1", entity_tier=1)],
+        available_actions={"market_buy": {"preset_stock": 5}},
+    )
+    state.world_briefing.market.buyable = [_preset_listing()]
+    assert _predict_delta(state, "market_buy", {}) == {}

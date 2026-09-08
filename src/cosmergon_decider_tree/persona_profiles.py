@@ -1,16 +1,18 @@
-"""Persona-Profile für TreeDecider v2.0.0 (GOBT — Goal-Oriented Behavior Tree).
+"""Persona profiles for TreeDecider v2.0.2 (GOBT — Goal-Oriented Behavior Tree).
 
-Konzept: docs/konzepte/konzept-decider-tree-v2.md (S171, 2026-05-08).
+VENDORED from ``cosmergon-decider-tree`` v2.0.2
+SOURCE OF TRUTH — vendored nach ``cosmergon-pet`` (``src/cosmergon_pet/persona_profiles.py``).
 
-Architektur in zwei Layern:
-1. **Subsistenz** (universal, persona-unabhängig): wenn Energy unter
-   threshold → Energie-Verdien-Aktionen.
-2. **Persona-Kern-Charakter** (individuell): wenn Energy ok → 6 Personas
-   mit eigenem Lebens-Zyklus, Action-Pool, Goal-Metric, Bias.
+Two layers:
+1. **Subsistenz** (universal): when energy < threshold → energy-earning actions.
+2. **Persona-Kern-Charakter** (individual): 6 personas with their own life
+   cycle, action pool, goal metric, bias.
 
-Persona-Bias ist additiv mit Skala [-0.3, +0.3]. Goal-Score ist
-[0, 1]. Final = base_score + persona_bias + compass_bias. Goal-Logik
-bleibt dominant, Persona prägt nur als Tiebreaker.
+Persona-Bias additive [-0.3, +0.3]. Goal-Score in [0, 1]. Final =
+base_score + persona_bias + compass_bias. Goal logic dominant, persona
+shapes as tiebreaker.
+
+Source: docs/konzepte/konzept-decider-tree-v2.md (private cosmergon repo).
 """
 
 from __future__ import annotations
@@ -19,13 +21,25 @@ from typing import Any
 
 # --- Subsistenz-Layer --------------------------------------------------------
 
-SUBSISTENCE_POOL: tuple[str, ...] = ("place_cells", "market_list", "create_field")
+SUBSISTENCE_POOL: tuple[str, ...] = (
+    "place_cells",
+    "market_list",
+    "create_field",
+    # v2.2.1 (S307): der Weg zurueck zu Besitz IST Subsistenz. Ein feldloser
+    # Agent unter der Schwelle sass hier fest: place_cells braucht ein Feld,
+    # create_field einen freien Slot — market_list war der einzige gueltige
+    # Zug (Socket-hand-Karussell, 23.08.). Die Eroberungs-Kette (gather ->
+    # siege, resolve_action_params) kostet 0 Energie und ist neben
+    # create_field die einzige nachhaltige Income-Quelle.
+    "start_mission",
+)
 """Aktionen die Energy bringen können (universal, persona-unabhängig)."""
 
 SUBSISTENCE_BIAS: dict[str, float] = {
     "place_cells": 0.0,
     "market_list": 0.0,
     "create_field": 0.0,
+    "start_mission": 0.0,
 }
 """Im Subsistenz-Modus alle gleichberechtigt — Goal-Score entscheidet."""
 
@@ -57,9 +71,9 @@ def subsistence_threshold(persona: str, state: Any) -> float:
         "scientist": [evolve_max, next_field_cost],
         "trader": [10_000, next_field_cost],  # market_list_min als Trader-Kerngeschäft
         "warrior": [5_000, next_field_cost],  # place_cells multi-field + escrow
-        "expansionist": [next_field_cost],     # create_field ist Kerngeschäft
-        "diplomat": [10_000, 1_500],           # contract_escrow + market_buy goodwill
-        "farmer": [evolve_max, 5_000],         # evolve + multi-field place_cells
+        "expansionist": [next_field_cost],  # create_field ist Kerngeschäft
+        "diplomat": [10_000, 1_500],  # contract_escrow + market_buy goodwill
+        "farmer": [evolve_max, 5_000],  # evolve + multi-field place_cells
     }
     return max(costs_by_persona.get(persona, costs_by_persona["scientist"])) * 2
 
@@ -75,39 +89,49 @@ def needs_subsistence(state: Any, persona: str) -> bool:
 PERSONA_ACTION_POOLS: dict[str, tuple[str, ...]] = {
     "scientist": (
         # Forscher: Experimente, evolve, Publikation, Acquire, Forschungs-Kollab
-        "place_cells",      # Experiment-Pattern (preset=blinker/toad/glider)
-        "evolve",           # Tier-Aufstieg
-        "market_list",      # Forschungs-Output veröffentlichen
-        "market_buy",       # fremde Patterns acquirieren (cube/field-only)
-        "propose_contract", # research_agreement
+        "place_cells",  # Experiment-Pattern (preset=blinker/toad/glider)
+        "evolve",  # Tier-Aufstieg
+        "start_mission",  # S206 scout_terminal — Intel-Sammeln
+        "market_list",  # Forschungs-Output veröffentlichen
+        "market_buy",  # fremde Patterns acquirieren (cube/field-only)
+        "propose_contract",  # research_agreement
+        "propose_from_template",  # S206 T09_ALLIANCE
         # create_field bleibt erlaubt aber niedrig-priorisiert — Subsistenz-Pfad
         "create_field",
     ),
     "trader": (
         # Trader: Markt-zentriert, Buy/Sell-Spread, Inventar verwenden
-        "market_buy",       # Buy-Side Kerngeschäft (alle item_types)
-        "market_list",      # Sell-Side Kerngeschäft
-        "propose_contract", # trade_agreement
-        "create_field",     # Inventar-Use (Cubes verbauen)
-        "place_cells",      # Inventar-Use (Presets verbauen)
+        "market_buy",  # Buy-Side Kerngeschäft (alle item_types)
+        "market_list",  # Sell-Side Kerngeschäft
+        "start_mission",  # S206 deliver_resource — Transport-Geschäft
+        "propose_contract",  # trade_agreement
+        "propose_from_template",  # S206 T07_TRADE_AGREEMENT
+        "create_field",  # Inventar-Use (Cubes verbauen)
+        "place_cells",  # Inventar-Use (Presets verbauen)
         # evolve niedrig-priorisiert
         "evolve",
     ),
     "warrior": (
         # Krieger: Territorium, Defense, Diplomatie als Defensiv-Strategie
-        "place_cells",      # Territorial-Markierung (preset=block) + Front-Refill
-        "propose_contract", # non_aggression als Defensiv-Pakt
-        "evolve",           # Kraftaufbau
-        "create_field",     # neues Territorium
-        "market_buy",       # nur cube/field
+        # S206: gather_spores für Waffen/Munition/Bomben (Arsenal-Aufbau)
+        "start_mission",  # S206 gather_spores — Waffen aus Sporen
+        "place_cells",  # Territorial-Markierung (preset=block) + Front-Refill
+        "propose_contract",  # non_aggression als Defensiv-Pakt
+        "propose_from_template",  # S206 T09_ALLIANCE
+        "evolve",  # Kraftaufbau
+        "create_field",  # neues Territorium
+        "market_buy",  # nur cube/field
         # market_list niedrig — Krieger ist nicht Trader
         "market_list",
     ),
     "expansionist": (
         # Eroberer: maximale Field-Expansion mit minimaler Pflege
-        "create_field",     # Kerngeschäft
-        "place_cells",      # minimal Fill (preset=block)
-        "market_buy",       # cube/field acquirieren
+        # S206: gather_spores für Werkzeuge zur Cube-Expansion
+        "start_mission",  # S206 gather_spores — Werkzeuge sammeln
+        "create_field",  # Kerngeschäft
+        "place_cells",  # minimal Fill (preset=block)
+        "market_buy",  # cube/field acquirieren
+        "propose_from_template",  # S206 T08_NON_AGGRESSION
         # evolve, market_list, propose_contract niedrig
         "evolve",
         "market_list",
@@ -115,21 +139,26 @@ PERSONA_ACTION_POOLS: dict[str, tuple[str, ...]] = {
     ),
     "diplomat": (
         # Vermittler: Verträge primär, Goodwill via Markt
-        "propose_contract", # Kerngeschäft
-        "market_buy",       # Goodwill via cheap-Listings
-        "place_cells",      # minimal
-        "market_list",      # Surplus moderat
-        "create_field",     # nur bei Bedarf
+        "propose_contract",  # Kerngeschäft
+        "propose_from_template",  # S206 T08_NON_AGGRESSION
+        "start_mission",  # S206 patrol_field — diplomatischer Rundgang
+        "market_buy",  # Goodwill via cheap-Listings
+        "place_cells",  # minimal
+        "market_list",  # Surplus moderat
+        "create_field",  # nur bei Bedarf
         # evolve niedrig
         "evolve",
     ),
     "farmer": (
         # Landwirt: Felder pflegen, evolve, Surplus listen
-        "place_cells",      # Kerngeschäft (cells halten)
-        "evolve",           # Tier-Effizienz
-        "market_list",      # Surplus monetisieren
-        "market_buy",       # nur sehr cheap (Schnäppchen)
-        "create_field",     # gelegentliche Erweiterung
+        # S206: gather_spores als Erntung passt thematisch
+        "place_cells",  # Kerngeschäft (cells halten)
+        "evolve",  # Tier-Effizienz
+        "start_mission",  # S206 gather_spores
+        "market_list",  # Surplus monetisieren
+        "propose_from_template",  # S206 T06_TRIBUTE / T07_TRADE_AGREEMENT
+        "market_buy",  # nur sehr cheap (Schnäppchen)
+        "create_field",  # gelegentliche Erweiterung
         # propose_contract niedrig
         "propose_contract",
     ),
@@ -138,51 +167,65 @@ PERSONA_ACTION_POOLS: dict[str, tuple[str, ...]] = {
 
 PERSONA_ACTION_BIAS: dict[str, dict[str, float]] = {
     "scientist": {
-        "evolve": +0.3,            # Forscher-Kerngeschäft
-        "market_list": +0.1,       # Publish ist gut
-        "place_cells": +0.0,       # neutral (Experiment ODER Pflege)
-        "market_buy": +0.0,        # Acquire ist neutral
+        "evolve": +0.3,  # Forscher-Kerngeschäft
+        "start_mission": +0.15,  # S206 scout_terminal (Intel-Sammeln)
+        "market_list": +0.1,  # Publish ist gut
+        "place_cells": +0.0,  # neutral (Experiment ODER Pflege)
+        "market_buy": +0.0,  # Acquire ist neutral
         "propose_contract": -0.1,  # gelegentlich, nicht reflexartig
-        "create_field": -0.2,      # nur bei Bedarf, nicht aggressiv
+        "propose_from_template": -0.05,
+        "create_field": -0.2,  # nur bei Bedarf, nicht aggressiv
     },
     "trader": {
-        "market_buy": +0.3,        # Buy-Side ist Kerngeschäft
-        "market_list": +0.2,       # Sell-Side ist Kerngeschäft
-        "propose_contract": +0.1,  # trade_agreement ist Trader-Strategie
-        "create_field": +0.0,      # neutral (Inventar-Use)
-        "place_cells": +0.0,       # neutral (Inventar-Use)
-        "evolve": -0.3,            # nicht Trader-Kerngeschäft
+        "market_buy": +0.3,  # Buy-Side ist Kerngeschäft
+        "market_list": +0.2,  # Sell-Side ist Kerngeschäft
+        "start_mission": +0.15,  # S206 deliver_resource (Transport-Geschäft)
+        "propose_contract": +0.1,  # trade_agreement
+        "propose_from_template": +0.1,  # S206 T07_TRADE_AGREEMENT
+        "create_field": +0.0,  # neutral (Inventar-Use)
+        "place_cells": +0.0,  # neutral (Inventar-Use)
+        "evolve": -0.3,  # nicht Trader-Kerngeschäft
     },
     "warrior": {
-        "place_cells": +0.3,       # Territorium markieren + Front-Refill
+        # S206: gather_spores für Arsenal-Aufbau (Waffen/Bomben aus Sporen)
+        "start_mission": +0.3,  # Arsenal über gather_spores
+        "place_cells": +0.3,  # Territorium markieren + Front-Refill
         "propose_contract": +0.2,  # non_aggression ist Defensiv-Strategie
-        "evolve": +0.0,            # neutral
-        "create_field": +0.0,      # neutral
-        "market_buy": -0.1,        # nur cube/field zum Bau
-        "market_list": -0.2,       # Krieger handelt nicht
+        "propose_from_template": +0.1,  # S206 T09_ALLIANCE
+        "evolve": +0.0,  # neutral
+        "create_field": +0.0,  # neutral
+        "market_buy": -0.1,  # nur cube/field zum Bau
+        "market_list": -0.2,  # Krieger handelt nicht
     },
     "expansionist": {
-        "create_field": +0.3,      # Kerngeschäft
-        "place_cells": +0.1,       # minimal Fill
-        "market_buy": +0.0,        # cube acquire
+        # S206: gather_spores für Cube-Expansions-Werkzeuge
+        "start_mission": +0.3,  # gather_spores priorisiert
+        "create_field": +0.3,  # Kerngeschäft
+        "place_cells": +0.1,  # minimal Fill
+        "market_buy": +0.0,  # cube acquire
+        "propose_from_template": +0.05,  # T08_NON_AGGRESSION
         "evolve": -0.2,
         "market_list": -0.2,
         "propose_contract": -0.3,
     },
     "diplomat": {
         "propose_contract": +0.3,  # Kerngeschäft
-        "market_buy": +0.1,        # Goodwill
+        "propose_from_template": +0.2,  # S206 T08_NON_AGGRESSION
+        "start_mission": +0.1,  # patrol_field
+        "market_buy": +0.1,  # Goodwill
         "place_cells": +0.0,
         "market_list": +0.0,
         "create_field": -0.1,
         "evolve": -0.3,
     },
     "farmer": {
-        "place_cells": +0.3,       # Pflege ist Kerngeschäft
-        "evolve": +0.2,            # Tier-Effizienz
-        "market_list": +0.1,       # Surplus
-        "market_buy": +0.0,        # Schnäppchen
-        "create_field": +0.0,      # gelegentlich
+        "place_cells": +0.3,  # Pflege ist Kerngeschäft
+        "evolve": +0.2,  # Tier-Effizienz
+        "start_mission": +0.15,  # S206 gather_spores (Erntung)
+        "market_list": +0.1,  # Surplus
+        "propose_from_template": +0.05,  # T06_TRIBUTE
+        "market_buy": +0.0,  # Schnäppchen
+        "create_field": +0.0,  # gelegentlich
         "propose_contract": -0.2,  # Bauer ist nicht Diplomat
     },
 }
@@ -249,6 +292,7 @@ COMPASS_BIAS: dict[str, dict[str, float]] = {
 
 # --- Persona-Goal-Metric-Funktion --------------------------------------------
 
+
 def persona_current_goal(state: Any, persona: str) -> dict[str, Any]:
     """Welches Goal-Metric ist im aktuellen State für die Persona aktiv?
 
@@ -281,10 +325,7 @@ def persona_current_goal(state: Any, persona: str) -> dict[str, Any]:
     if persona == "scientist":
         # Forscher-Zyklus: 1) Experiment-Pattern aufbauen 2) reife wachsen lassen
         # 3) evolve 4) publish 5) acquire 6) collab
-        if not any(
-            getattr(f, "entity_type", None) in ("oscillator", "spaceship")
-            for f in fields
-        ):
+        if not any(getattr(f, "entity_type", None) in ("oscillator", "spaceship") for f in fields):
             return {"kind": "patterns_established", "target": 1}  # Experiment-Modus
         if has_evolvable:
             return {"kind": "evolved_fields_at_least", "target": 1}  # Evolve-Modus
@@ -329,15 +370,15 @@ def persona_current_goal(state: Any, persona: str) -> dict[str, Any]:
 
 
 __all__ = [
-    "SUBSISTENCE_POOL",
-    "SUBSISTENCE_BIAS",
+    "COMPASS_BIAS",
     "EVOLUTION_COST_BY_TIER",
     "FIELD_COST_BASE",
-    "subsistence_threshold",
-    "needs_subsistence",
-    "PERSONA_ACTION_POOLS",
     "PERSONA_ACTION_BIAS",
+    "PERSONA_ACTION_POOLS",
     "PERSONA_BUYABLE_TYPES",
-    "COMPASS_BIAS",
+    "SUBSISTENCE_BIAS",
+    "SUBSISTENCE_POOL",
+    "needs_subsistence",
     "persona_current_goal",
+    "subsistence_threshold",
 ]
