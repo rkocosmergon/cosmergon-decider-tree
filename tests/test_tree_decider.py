@@ -102,7 +102,11 @@ async def test_freier_slot_schlaegt_erobern_trotz_kette() -> None:
         energy=11_449,
         fields=[],
         cubes=[cube],  # freier Bauplatz
-        available_actions=_comet_hand_lage(),
+        # v2.3.2: der Server meldet den freien Platz auch (available =
+        # can_afford UND Slot frei) — die Lage-Fixture sagt "kein Bauplatz".
+        available_actions=_comet_hand_lage(
+            create_field={"can_afford": True, "next_cost": 500.0, "available": True}
+        ),
         compass="explore",
     )
     action, params = await TreeDecider().decide(state)
@@ -452,3 +456,33 @@ def test_delta_folgt_demselben_kern() -> None:
     )
     state.world_briefing.market.buyable = [_preset_listing()]
     assert _predict_delta(state, "market_buy", {}) == {}
+
+
+# --- v2.3.2 Server-Faktum ``available`` (cosmergon#405, Live-Fall Socket-hand) --
+
+
+@pytest.mark.asyncio
+async def test_laufende_mission_bei_koerper_in_recovery_kein_start() -> None:
+    """#405-Repro — rot gegen v2.3.1. Socket-hand 27.09. 19:36Z: Mission
+    laeuft, Koerper steht in ``recovery``, der Server sagt
+    ``available: false``. Die Nachbildung ``marauder_state != "recovery"``
+    liess den Start durch (6 x 409 in 2 h)."""
+    from cosmergon_decider_tree.decider import is_valid
+
+    fakten = _comet_hand_lage()
+    fakten["start_mission"]["available"] = False
+    state = _make_state(energy=11_449, available_actions=fakten, compass="explore")
+
+    assert is_valid(state, "start_mission") is False
+    action, _ = await TreeDecider().decide(state)
+    assert action != "start_mission"
+
+
+def test_ohne_available_bleibt_start_durchlaessig() -> None:
+    """Aelterer Server ohne ``available``: keine Sperre aus dem Fehlen."""
+    from cosmergon_decider_tree.decider import is_valid
+
+    fakten = _comet_hand_lage()
+    del fakten["start_mission"]["available"]
+    state = _make_state(energy=11_449, available_actions=fakten)
+    assert is_valid(state, "start_mission") is True
