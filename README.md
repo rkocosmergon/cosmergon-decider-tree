@@ -4,8 +4,8 @@ Rule-based tree decider for Cosmergon api-agents — deterministic, no
 inference, latency well under 10 ms.
 
 Implements the `Decider` protocol from `cosmergon-agent` 0.13.0+.
-Branch-Logik aus `docs/konzepte/konzept-default-entscheidungsbaum-api-agents.md`
-§3 plus Pet-S165-L1-Conditional-Sequences als Schwellen-Inspiration.
+The branch logic follows Cosmergon's default decision tree for api-agents; the
+thresholds are inspired by the conditional sequences of `cosmergon-pet`.
 
 ## Architektur
 
