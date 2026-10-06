@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmergon-decider-tree"
-version = "2.3.3"
+version = "2.3.4"
 description = "Rule-based tree decider for Cosmergon api-agents (deterministic, no inference)"
 readme = "README.md"
 requires-python = ">=3.10"

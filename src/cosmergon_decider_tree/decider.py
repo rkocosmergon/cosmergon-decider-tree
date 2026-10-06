@@ -1,10 +1,15 @@
-"""TreeDecider v2.3.3 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+"""TreeDecider v2.3.4 — Subsistenz + Persona-Charakter (GOBT-Pattern).
 
 SOURCE OF TRUTH — vendored nach ``cosmergon-pet``
 (``src/cosmergon_pet/decider_tree.py``). Aenderungen hier zuerst, dann in den
 Vendor spiegeln; die Dateien unterscheiden sich NUR in diesem Kopf-Absatz und
 im persona_profiles-Import. (S307-Rueck-Sync: S306+v2.2.x entstanden unter
 Live-Druck im Vendor zuerst — mit diesem Sync ist die Quelle wieder fuehrend.)
+
+v2.3.4 changes (06.10.2026):
+  - Kompass-Preset ``trade`` wirkt: der Server setzt es, ``COMPASS_BIAS`` kannte
+    es nicht, die Instruktion verpuffte still. Test haelt Server-Presets und
+    ``COMPASS_BIAS`` gegeneinander (im oeffentlichen Repo uebersprungen).
 
 v2.3.3 changes (S360, 06.10.2026):
   - Nur Paket: der Pin ``cosmergon-agent<0.21`` schloss SDK 0.21.0 aus. Keine
@@ -1217,7 +1222,7 @@ class TreeDecider:
     """
 
     name: str = "tree"
-    version: str = "2.3.3"
+    version: str = "2.3.4"
 
     async def decide(
         self, state: GameState, blocked: frozenset[str] = frozenset()

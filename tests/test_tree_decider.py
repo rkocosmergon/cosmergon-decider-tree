@@ -486,3 +486,35 @@ def test_ohne_available_bleibt_start_durchlaessig() -> None:
     del fakten["start_mission"]["available"]
     state = _make_state(energy=11_449, available_actions=fakten)
     assert is_valid(state, "start_mission") is True
+
+
+# --- Kompass: jedes Server-Preset hat einen Bias (cosmergon#451) -----------------------
+
+
+def _server_compass_presets() -> list[str] | None:
+    """Die Preset-Namen aus ``backend/app/core/compass.py``, falls die Quelle im Checkout liegt."""
+    import ast
+    from pathlib import Path
+
+    for parent in Path(__file__).resolve().parents:
+        quelle = parent / "backend" / "app" / "core" / "compass.py"
+        if quelle.exists():
+            baum = ast.parse(quelle.read_text(encoding="utf-8"))
+            for knoten in ast.walk(baum):
+                ziel = getattr(knoten, "targets", [getattr(knoten, "target", None)])[0]
+                if getattr(ziel, "id", "") == "COMPASS_PRESETS" and isinstance(
+                    knoten.value, ast.Dict
+                ):
+                    return [k.value for k in knoten.value.keys if isinstance(k, ast.Constant)]
+    return None
+
+
+def test_jedes_server_preset_hat_einen_kompass_bias() -> None:
+    """Ein Preset, das der Server setzt und der Tree nicht kennt, verpufft still."""
+    from cosmergon_decider_tree.persona_profiles import COMPASS_BIAS
+
+    presets = _server_compass_presets()
+    if presets is None:
+        pytest.skip("Server-Quelle nicht im Checkout (oeffentliches Repo)")
+    fehlend = sorted(set(presets) - set(COMPASS_BIAS))
+    assert fehlend == [], f"Server-Presets ohne Kompass-Bias: {fehlend}"
