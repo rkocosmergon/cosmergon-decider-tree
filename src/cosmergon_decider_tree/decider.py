@@ -1,10 +1,16 @@
-"""TreeDecider v2.3.4 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+"""TreeDecider v2.3.5 — Subsistenz + Persona-Charakter (GOBT-Pattern).
 
 SOURCE OF TRUTH — vendored nach ``cosmergon-pet``
 (``src/cosmergon_pet/decider_tree.py``). Aenderungen hier zuerst, dann in den
 Vendor spiegeln; die Dateien unterscheiden sich NUR in diesem Kopf-Absatz und
 im persona_profiles-Import. (S307-Rueck-Sync: S306+v2.2.x entstanden unter
 Live-Druck im Vendor zuerst — mit diesem Sync ist die Quelle wieder fuehrend.)
+
+v2.3.5 changes (13.10.2026):
+  - ``market_list`` fuer Energie ohne eigenen Preis: die Menge waechst mit dem Guthaben,
+    der feste Preis 400-500 nicht — sechsstellige Mengen gingen fuer 450 weg (cos20 #477).
+    Der Server setzt den Preis aus der Menge. Aeltere Server: Verhalten unveraendert.
+  - ``consolidate`` aus ``COMPASS_BIAS`` entfernt (der Server setzt dieses Preset nie).
 
 v2.3.4 changes (06.10.2026):
   - Kompass-Preset ``trade`` wirkt: der Server setzt es, ``COMPASS_BIAS`` kannte
@@ -490,7 +496,8 @@ def _market_list_plan(state: GameState) -> dict[str, Any] | None:
     Liest die Server-Wahrheit aus ``available_actions["market_list"]``
     (Backend >= v1.64.30: ``available`` + ``sellable_energy`` +
     ``sellable_items``). Energie nur bei Überschuss über dem
-    Zerfalls-Freibetrag (S278-Deckungsregel); gedeckte Inventar-Items gehen
+    Zerfalls-Freibetrag (S278-Deckungsregel) und seit 2.3.5 OHNE eigenen Preis — den
+    setzt der Server aus der Menge; gedeckte Inventar-Items gehen
     immer — Preis kommt vom billigsten aktiven Listing desselben Typs im
     Markt-Briefing (5 % darunter), NIE aus einer eigenen Konstante (die
     würde gegen die Welt driften). Ohne Referenzpreis wird nicht gelistet.
@@ -513,7 +520,11 @@ def _market_list_plan(state: GameState) -> dict[str, Any] | None:
 
     try:
         if float(ml.get("sellable_energy") or 0) > 0:
-            return {"price_energy": energy_price}
+            # 2.3.5: no price of our own for energy. The amount offered grows with the
+            # balance (the server sets it), a fixed 400-500 did not: rich agents sold six-digit
+            # amounts of energy for 450. Without a price the server sets one that is never
+            # below what the seller gives away.
+            return {}
     except (TypeError, ValueError):
         pass
 
@@ -1222,7 +1233,7 @@ class TreeDecider:
     """
 
     name: str = "tree"
-    version: str = "2.3.4"
+    version: str = "2.3.5"
 
     async def decide(
         self, state: GameState, blocked: frozenset[str] = frozenset()
