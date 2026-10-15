@@ -1,0 +1,40 @@
+name: CI
+
+# Tests and lint on every push to main and every pull request. No secrets, read-only token;
+# publishing stays a separate, manual workflow (publish.yml, workflow_dispatch only).
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install package and tools
+        # ruff is pinned to the version the source is checked with, so a new ruff release does
+        # not turn the build red without a change here.
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]" "ruff==0.15.12"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format (ruff)
+        run: ruff format --check .
+
+      - name: Tests
+        run: python -m pytest -q tests

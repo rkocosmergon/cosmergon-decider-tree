@@ -40,3 +40,8 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+# Gleiche Zeilenlaenge wie die Quelle im privaten Repo; die CI pinnt die ruff-Fassung.
+line-length = 100
+target-version = "py310"
