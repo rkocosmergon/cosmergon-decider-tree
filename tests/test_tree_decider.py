@@ -155,15 +155,20 @@ async def test_decider_unknown_persona_falls_back_to_scientist() -> None:
 
 
 def _ml_actions(
-    *, available: bool, energy: float = 0.0, items: dict | None = None
+    *,
+    available: bool,
+    energy: float = 0.0,
+    items: dict | None = None,
+    open_energy: int | None = None,
 ) -> dict[str, dict[str, Any]]:
-    return {
-        "market_list": {
-            "available": available,
-            "sellable_energy": energy,
-            "sellable_items": items or {},
-        }
+    ml: dict[str, Any] = {
+        "available": available,
+        "sellable_energy": energy,
+        "sellable_items": items or {},
     }
+    if open_energy is not None:
+        ml["open_energy_listings"] = open_energy
+    return {"market_list": ml}
 
 
 @pytest.mark.asyncio
@@ -519,3 +524,41 @@ def test_jedes_server_preset_hat_einen_kompass_bias() -> None:
         pytest.skip("Server-Quelle nicht im Checkout (oeffentliches Repo)")
     fehlend = sorted(set(presets) - set(COMPASS_BIAS))
     assert fehlend == [], f"Server-Presets ohne Kompass-Bias: {fehlend}"
+
+
+def test_market_list_legt_keine_energie_nach_solange_ein_angebot_offen_ist() -> None:
+    """2.3.6 (cos20 #491): ein offenes eigenes Energie-Angebot ⇒ kein weiteres.
+
+    Gegenprobe gegen 2.3.5: dort kam ``{}`` (Energie-Listing) zurueck — rot.
+    """
+    from cosmergon_decider_tree.decider import _market_list_plan, is_valid
+
+    state = _make_state(
+        energy=20_000,
+        available_actions=_ml_actions(available=True, energy=2_500, open_energy=1),
+    )
+    assert _market_list_plan(state) is None
+    assert is_valid(state, "market_list") is False
+
+
+def test_market_list_ohne_offenes_angebot_wie_bisher() -> None:
+    """0 offene Angebote oder ein aelterer Server ohne Schluessel: Energie wie in 2.3.5."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    for offen in (0, None):
+        state = _make_state(
+            energy=20_000,
+            available_actions=_ml_actions(available=True, energy=2_500, open_energy=offen),
+        )
+        assert _market_list_plan(state) == {}
+
+
+def test_market_list_inventar_geht_trotz_offenem_energie_angebot() -> None:
+    """Das Nachlege-Stopp gilt nur fuer Energie; gedecktes Inventar mit Referenzpreis geht."""
+    from cosmergon_decider_tree.decider import _market_list_plan
+
+    actions = _ml_actions(available=True, energy=2_500, items={"mega_bomb": 2}, open_energy=1)
+    actions["market_list"]["reference_prices"] = {"mega_bomb": 1_000}
+    state = _make_state(energy=20_000, available_actions=actions)
+    plan = _market_list_plan(state)
+    assert plan is not None and plan.get("item_type") == "mega_bomb"
