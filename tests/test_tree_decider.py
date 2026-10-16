@@ -564,9 +564,7 @@ async def test_offenes_energie_angebot_faellt_nicht_auf_die_bombe_durch() -> Non
     """
     from cosmergon_decider_tree.decider import _market_list_plan, is_valid
 
-    actions = _ml_actions(
-        available=True, energy=153_083, items={"mega_bomb": 1}, open_energy=1
-    )
+    actions = _ml_actions(available=True, energy=153_083, items={"mega_bomb": 1}, open_energy=1)
     actions["market_list"]["reference_prices"] = {"mega_bomb": 1_000}
     felder = [
         SimpleNamespace(id=f"00000000-0000-0000-0000-00000000000{i}", active_cell_count=40)
