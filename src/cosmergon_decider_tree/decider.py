@@ -1,10 +1,19 @@
-"""TreeDecider v2.3.6 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+"""TreeDecider v2.3.7 — Subsistenz + Persona-Charakter (GOBT-Pattern).
 
 SOURCE OF TRUTH — vendored nach ``cosmergon-pet``
 (``src/cosmergon_pet/decider_tree.py``). Aenderungen hier zuerst, dann in den
 Vendor spiegeln; die Dateien unterscheiden sich NUR in diesem Kopf-Absatz und
 im persona_profiles-Import. (S307-Rueck-Sync: S306+v2.2.x entstanden unter
 Live-Druck im Vendor zuerst — mit diesem Sync ist die Quelle wieder fuehrend.)
+
+v2.3.7 changes (16.10.2026):
+  - ``market_list`` faellt nach der Energie-Sperre nicht mehr auf Gegenstaende durch: Ist
+    Energie verkaufbar, aber ein eigenes Angebot offen, waehlt der Baum keinen Markt-Zug.
+    2.3.6 verkaufte dort das wertvollste Stueck, die Bomben einer Turnier-Kette (13 von 14
+    in einer Stunde, cos20 #491). Gegenstaende bleiben der Ausweg ohne verkaufbare Energie.
+  - Persona ``scientist`` startet keine Erkundung ohne Zielspieler mehr, sondern sammelt
+    auf dem eigenen Feld (cos20 #494: 465 von 465 Auskuenften leer).
+  - ``TreeDecider.version`` stand seit 2.3.6 auf "2.3.5", jetzt mit dem Paket gleich.
 
 v2.3.6 changes (15.10.2026):
   - ``market_list`` legt keine Energie nach, solange ein eigenes Energie-Angebot offen ist
@@ -537,7 +546,13 @@ def _market_list_plan(state: GameState) -> dict[str, Any] | None:
         return None
 
     try:
-        if float(ml.get("sellable_energy") or 0) > 0 and not _energie_angebot_offen(ml):
+        if float(ml.get("sellable_energy") or 0) > 0:
+            # 2.3.7 (cos20 #491): an open energy offer stops the market move, it does not fall
+            # through to items. 2.3.6 fell through and sold the most valuable piece - the
+            # bombs a tournament chain had just gathered (13 of 14 in an hour). Items stay the
+            # way out for agents WITHOUT sellable energy (S297).
+            if _energie_angebot_offen(ml):
+                return None
             # 2.3.5: no price of our own for energy. The amount offered grows with the
             # balance (the server sets it), a fixed 400-500 did not: rich agents sold six-digit
             # amounts of energy for 450. Without a price the server sets one that is never
@@ -822,7 +837,10 @@ def _resolve_start_mission(state: GameState, persona: str) -> dict[str, Any]:
         "warrior": "gather_spores",  # Arsenal-Aufbau
         "expansionist": "gather_spores",  # Werkzeuge für Cube-Expansion
         "farmer": "gather_spores",  # Erntung
-        "scientist": "scout_terminal",  # Intel-Sammeln
+        # 2.3.7 (cos20 #494): scientist erkundet nicht mehr. Die Erkundung lief mit
+        # `wealth_estimate` ohne Zielspieler — 465 von 465 Auskuenften leer, und api-Agenten
+        # sehen ihre Auskuenfte ohnehin nicht im Zustand. Der feldlose Notweg unten bleibt.
+        "scientist": "gather_spores",
         "trader": "deliver_resource",  # Transport-Geschäft
         "diplomat": "patrol_field",  # Diplomatischer Rundgang
     }
@@ -1251,7 +1269,7 @@ class TreeDecider:
     """
 
     name: str = "tree"
-    version: str = "2.3.5"
+    version: str = "2.3.7"
 
     async def decide(
         self, state: GameState, blocked: frozenset[str] = frozenset()

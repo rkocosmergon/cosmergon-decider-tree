@@ -553,12 +553,60 @@ def test_market_list_ohne_offenes_angebot_wie_bisher() -> None:
         assert _market_list_plan(state) == {}
 
 
-def test_market_list_inventar_geht_trotz_offenem_energie_angebot() -> None:
-    """Das Nachlege-Stopp gilt nur fuer Energie; gedecktes Inventar mit Referenzpreis geht."""
+@pytest.mark.asyncio
+async def test_offenes_energie_angebot_faellt_nicht_auf_die_bombe_durch() -> None:
+    """2.3.7 (cos20 #491, Panel Angebotsgrenze A3): Root-storms Lage vom 16.10. 08:4xZ.
+
+    scientist, 8 Felder, 153.083 verkaufbare Energie, ein Energie-Angebot offen, dazu eine
+    frisch geholte Bombe. 2.3.6 fiel in den Gegenstands-Zweig und listete die Bombe der
+    Turnier-Kette (unter explore/cooperate/trade am Geraet nachgerechnet). Jetzt kein
+    Markt-Zug, und der Baum waehlt etwas anderes. Gegenprobe gegen 2.3.6: rot.
+    """
+    from cosmergon_decider_tree.decider import _market_list_plan, is_valid
+
+    actions = _ml_actions(
+        available=True, energy=153_083, items={"mega_bomb": 1}, open_energy=1
+    )
+    actions["market_list"]["reference_prices"] = {"mega_bomb": 1_000}
+    felder = [
+        SimpleNamespace(id=f"00000000-0000-0000-0000-00000000000{i}", active_cell_count=40)
+        for i in range(8)
+    ]
+    for kompass in ("explore", "cooperate", "trade", "attack", "autonomous"):
+        state = _make_state(
+            energy=622_333, fields=felder, available_actions=actions, compass=kompass
+        )
+        assert _market_list_plan(state) is None
+        assert is_valid(state, "market_list") is False
+        action, _ = await TreeDecider().decide(state)
+        assert action != "market_list", kompass
+
+
+def test_inventar_bleibt_der_ausweg_ohne_verkaufbare_energie() -> None:
+    """S297 bleibt: ohne verkaufbare Energie geht gedecktes Inventar, auch mit Altangebot."""
     from cosmergon_decider_tree.decider import _market_list_plan
 
-    actions = _ml_actions(available=True, energy=2_500, items={"mega_bomb": 2}, open_energy=1)
+    actions = _ml_actions(available=True, energy=0, items={"mega_bomb": 2}, open_energy=1)
     actions["market_list"]["reference_prices"] = {"mega_bomb": 1_000}
-    state = _make_state(energy=20_000, available_actions=actions)
+    state = _make_state(energy=1_200, available_actions=actions)
     plan = _market_list_plan(state)
     assert plan is not None and plan.get("item_type") == "mega_bomb"
+
+
+def test_scientist_mit_feld_sammelt_statt_leer_zu_erkunden() -> None:
+    """2.3.7 (cos20 #494): scientist mit Feld → gather_spores des eigenen Felds.
+
+    Gegenprobe gegen 2.3.6: dort kam scout_terminal mit wealth_estimate ohne Zielspieler —
+    der Server speichert dann `missing_player_id` (465 von 465 Auskuenften leer).
+    """
+    from cosmergon_decider_tree.decider import _resolve_start_mission
+
+    feld = SimpleNamespace(id="22222222-2222-2222-2222-222222222222", active_cell_count=40)
+    cube = SimpleNamespace(id="11111111-1111-1111-1111-111111111111")
+    state = _make_state(persona="scientist", fields=[feld], cubes=[cube])
+    state.reachable_cubes = [cube]
+
+    draht = _resolve_start_mission(state, "scientist")["params"]  # Draht-Form, _mission_payload
+
+    assert draht["mission_type"] == "gather_spores"
+    assert draht["params"]["field_id"] == feld.id
