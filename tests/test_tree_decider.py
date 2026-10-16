@@ -608,3 +608,19 @@ def test_scientist_mit_feld_sammelt_statt_leer_zu_erkunden() -> None:
 
     assert draht["mission_type"] == "gather_spores"
     assert draht["params"]["field_id"] == feld.id
+
+
+@pytest.mark.asyncio
+async def test_offener_vertrag_haelt_die_sperrliste_ein() -> None:
+    """2.3.7 (cos20 #491): ``blocked`` gilt auch fuer Vertragszuege.
+
+    Ein offener Vertrag ging vor der Sperrliste: hatte der Loop ``accept_contract`` gesperrt,
+    weil der Server ihn wiederholt ablehnt, kam er trotzdem zurueck. Gegenprobe gegen den Stand
+    vor dieser Zeile: rot.
+    """
+    state = _make_state(persona="scientist", energy=10_000)
+    state.pending_contracts = [{"contract_type": "alliance", "contract_id": "c-1"}]
+    action, _ = await TreeDecider().decide(state)
+    assert action == "accept_contract"  # ohne Sperre: der Vertrag hat Vorrang
+    action, _ = await TreeDecider().decide(state, blocked=frozenset({"accept_contract"}))
+    assert action != "accept_contract"
