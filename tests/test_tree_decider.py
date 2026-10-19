@@ -667,3 +667,57 @@ async def test_offener_vertrag_haelt_die_sperrliste_ein() -> None:
     assert action == "accept_contract"  # ohne Sperre: der Vertrag hat Vorrang
     action, _ = await TreeDecider().decide(state, blocked=frozenset({"accept_contract"}))
     assert action != "accept_contract"
+
+
+# --- 2.3.9 (cos20 #529): Zustand nennt je Feld und je Vertrag, was jetzt gelingt ------------
+
+_HAUPT = "11111111-1111-1111-1111-111111111111"
+_ARENA = "22222222-2222-2222-2222-222222222222"
+
+
+def _im_turnier(ready: list[str] | None) -> Any:
+    """Root-storm 19.10.: ein Arena-Feld vorn, ein Hauptwelt-Feld; der Turnierkoerper ist
+    beschaeftigt, ``available`` (Hauptkoerper) sagt trotzdem ja."""
+    fakten: dict[str, Any] = {"available": True, "marauder_state": "recovery"}
+    if ready is not None:
+        fakten["ready_fields"] = ready
+    return _make_state(
+        persona="warrior",
+        fields=[SimpleNamespace(id=_ARENA), SimpleNamespace(id=_HAUPT)],
+        available_actions={"start_mission": fakten},
+    )
+
+
+def test_mission_geht_auf_das_bereite_feld() -> None:
+    """Vorher ``fields[0]`` — das Arena-Feld, und der Start traf den beschaeftigten
+    Turnierkoerper (38/38 Ablehnungen „on_mission“ im Turnier). Gegenprobe gegen 2.3.8: rot."""
+    from cosmergon_decider_tree.decider import resolve_action_params
+
+    zug = resolve_action_params(_im_turnier([_HAUPT]), "start_mission", "warrior")
+    assert zug["params"]["params"]["field_id"] == _HAUPT
+
+
+def test_ohne_bereites_feld_keine_mission() -> None:
+    from cosmergon_decider_tree.decider import is_valid
+
+    assert is_valid(_im_turnier([]), "start_mission") is False
+
+
+def test_aelterer_server_ohne_ready_fields_bleibt_wie_bisher() -> None:
+    from cosmergon_decider_tree.decider import resolve_action_params
+
+    zug = resolve_action_params(_im_turnier(None), "start_mission", "warrior")
+    assert zug["params"]["params"]["field_id"] == _ARENA
+
+
+@pytest.mark.asyncio
+async def test_nicht_annehmbarer_vertrag_wird_abgelehnt() -> None:
+    """``acceptable: false`` (S253 Turniergrenze): ablehnen statt annehmen wollen
+    (24/500 Zuege scheiterten so). Gegenprobe gegen 2.3.8: rot."""
+    state = _make_state(persona="scientist", energy=10_000)
+    state.pending_contracts = [
+        {"contract_type": "alliance", "contract_id": "c-1", "acceptable": False,
+         "why": "Contract crosses an active tournament boundary (S253)"}
+    ]  # fmt: skip
+    action, params = await TreeDecider().decide(state)
+    assert (action, params) == ("reject_contract", {"contract_id": "c-1"})
