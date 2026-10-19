@@ -615,7 +615,9 @@ async def test_ausserhalb_der_subsistenz_bleibt_die_bombe_im_inventar() -> None:
         for i in range(3)
     ]
     for kompass in ("explore", "cooperate", "trade", "attack", "autonomous"):
-        state = _make_state(energy=60_000, fields=felder, available_actions=actions, compass=kompass)
+        state = _make_state(
+            energy=60_000, fields=felder, available_actions=actions, compass=kompass
+        )
         assert _market_list_plan(state) is None, kompass
         assert is_valid(state, "market_list") is False
         action, _ = await TreeDecider().decide(state)
