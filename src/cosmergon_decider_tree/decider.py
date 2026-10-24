@@ -1,10 +1,16 @@
-"""TreeDecider v2.3.10 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+"""TreeDecider v2.3.11 — Subsistenz + Persona-Charakter (GOBT-Pattern).
 
 SOURCE OF TRUTH — vendored nach ``cosmergon-pet``
 (``src/cosmergon_pet/decider_tree.py``). Aenderungen hier zuerst, dann in den
 Vendor spiegeln; die Dateien unterscheiden sich NUR in diesem Kopf-Absatz und
 im persona_profiles-Import. (S307-Rueck-Sync: S306+v2.2.x entstanden unter
 Live-Druck im Vendor zuerst — mit diesem Sync ist die Quelle wieder fuehrend.)
+
+v2.3.11 changes (24.10.2026, cos20 #560, neunter Durchgang an Shikigon, Befund P1):
+  - Ein Vertragsangebot, das den Agenten zahlen laesst, lehnt der Baum ab, statt es nach seiner
+    Art anzunehmen: ein Tribut mit ihm als Zahler (Kennung wie der Server sie liest) oder ohne
+    lesbaren Zahler, ein Buendnis mit Kosten je Tick (``_kostet_mich``). Bis 2.3.10 konnte jeder
+    Spieler einem Agenten, dessen Persona Tribut oder Buendnis annimmt, so Energie abnehmen.
 
 v2.3.10 changes (23.10.2026, cos20 #492, sechster Durchgang an Shikigon):
   - Die Fakten des Servers (``available_actions``) liest der Baum in ihrer Form: ein Objekt,
@@ -158,6 +164,7 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from typing import Any
 
 from cosmergon_agent.state import GameState
@@ -1267,6 +1274,32 @@ def _score_gegen_ziel(
 # --- Decision-Pipeline -------------------------------------------------------
 
 
+def _kennung(wert: Any) -> uuid.UUID | None:
+    """Eine Kennung, wie der Server sie liest (jede Schreibweise von ``uuid.UUID``), sonst ``None``."""
+    try:
+        return uuid.UUID(str(wert))
+    except ValueError:
+        return None
+
+
+def _kostet_mich(state: GameState, ctype: str, terms: Any) -> bool:
+    """2.3.11 (cos20 #560): ein Angebot, das diesen Agenten zahlen laesst.
+
+    Ein Tribut, bei dem er zahlt oder der Zahler nicht zu lesen ist, und ein Buendnis mit
+    Kosten je Tick (auch unlesbaren). Dieselbe Regel wie Shikigon ``brain/contracts.py:_kind_costs``.
+    Die uebrigen Arten, die der Baum annimmt, bucht die Welt ohne Escrow nicht.
+    """
+    terms = _objekt(terms)
+    if ctype == "alliance":
+        wert = terms.get("cost_per_tick")
+        return wert is not None and _endlich(wert) != 0.0
+    if ctype == "tribute":
+        ich = _kennung(getattr(state, "agent_id", None))
+        zahler = _kennung(terms.get("payer_id"))
+        return ich is None or zahler is None or zahler == ich
+    return False
+
+
 def _decide_pending_contract(state: GameState, persona: str) -> tuple[str, dict[str, Any]] | None:
     """S204 — wenn pending contract addressed an mich, entscheide accept/reject.
 
@@ -1288,6 +1321,9 @@ def _decide_pending_contract(state: GameState, persona: str) -> tuple[str, dict[
         if isinstance(c, dict) and c.get("acceptable") is False:
             return ("reject_contract", {"contract_id": str(cid)})
         decision = bias.get(ctype)
+        terms = c.get("terms") if isinstance(c, dict) else getattr(c, "terms", None)
+        if decision == "accept" and _kostet_mich(state, ctype, terms):
+            return ("reject_contract", {"contract_id": str(cid)})
         if decision == "accept":
             return ("accept_contract", {"contract_id": str(cid), "escrow_amount": 0.0})
         if decision == "reject":
@@ -1331,7 +1367,7 @@ class TreeDecider:
     """
 
     name: str = "tree"
-    version: str = "2.3.10"
+    version: str = "2.3.11"
 
     async def decide(
         self, state: GameState, blocked: frozenset[str] = frozenset()
