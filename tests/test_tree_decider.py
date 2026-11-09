@@ -723,3 +723,26 @@ async def test_nicht_annehmbarer_vertrag_wird_abgelehnt() -> None:
     ]  # fmt: skip
     action, params = await TreeDecider().decide(state)
     assert (action, params) == ("reject_contract", {"contract_id": "c-1"})
+
+
+def test_vorschlag_meidet_ziele_die_ablehnen_673() -> None:
+    """cos20 #673: der Baum nahm targets[0] und schlug Kriegern Nichtangriff vor (Ablehnung
+    garantiert, Ruf sinkt). Mit ``lehnt_ab`` waehlt er das erste Ziel, das annimmt; lehnen alle ab,
+    schlaegt er nichts vor. Ohne das Feld (aeltere SDKs) bleibt es beim ersten Ziel."""
+    from cosmergon_decider_tree.decider import resolve_action_params
+
+    krieger = SimpleNamespace(player_id="k", lehnt_ab=("alliance", "non_aggression"))
+    bauer = SimpleNamespace(player_id="b", lehnt_ab=("mercenary",))
+    alt = SimpleNamespace(player_id="alt")  # ohne Feld
+
+    state = _make_state(persona="warrior")
+    state.world_briefing.contract_targets = [krieger, bauer]
+    assert resolve_action_params(state, "propose_contract", "warrior")["to_player_id"] == "b"
+    vorlage = resolve_action_params(state, "propose_from_template", "warrior")
+    assert vorlage["params"]["slots"]["partner_id"] == "b"
+
+    state.world_briefing.contract_targets = [krieger]
+    assert resolve_action_params(state, "propose_contract", "warrior") == {}
+
+    state.world_briefing.contract_targets = [alt]
+    assert resolve_action_params(state, "propose_contract", "warrior")["to_player_id"] == "alt"
