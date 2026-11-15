@@ -1,4 +1,11 @@
-"""TreeDecider v2.3.12 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+"""TreeDecider v2.3.14 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+
+v2.3.14 changes (15.11.2026, cos20 #765, Betreuer-Durchgang Shikigon c6f552f, B6):
+  - Der Kauf-Kern (``_billigstes_angebot``, beide Zweige) kauft eine Art nur bis zu ihrem
+    Hauspreis, wenn die Welt ``market_buy.house_prices`` nennt (Server ab cos20 #765). Eine Art,
+    die dort fehlt oder keinen Preis > 0 hat, kauft er nicht; ist das Feld kein Objekt, kauft er
+    nichts. Bis 2.3.13 bekam der Spieler, dessen Angebot das einzige seiner Art war, bis zur
+    ganzen Energie des Agenten. Nennt die Welt das Feld nicht (aelterer Server): wie 2.3.13.
 
 v2.3.12 changes (09.11.2026, cos20 #673): Vertragsvorschlaege meiden Ziele, deren ``lehnt_ab``
 den Vertragstyp nennt (Server seit v1.65.776, SDK 0.31.5). Lehnen alle ab, kein Vorschlag.
@@ -168,6 +175,7 @@ from __future__ import annotations
 import logging
 import math
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from cosmergon_agent.state import GameState
@@ -685,22 +693,47 @@ def _cheapest_evolvable_field(state: GameState) -> Any | None:
     return eligible[0][1]
 
 
-def _cheapest_buyable(state: GameState, persona: str) -> Any | None:
-    allowed = PERSONA_BUYABLE_TYPES.get(persona, ("cube", "field"))
+def _hauspreise(state: GameState) -> dict[str, Any] | None:
+    """2.3.14 (cos20 #765): ``market_buy.house_prices`` — je Art der Preis, zu dem das Haus sie
+    anbietet. ``None`` heisst: die Welt nennt das Feld nicht (aelterer Server), der Aufrufer
+    bleibt beim Verhalten von 2.3.13 (Durchlaessigkeit wie bei ``preset_stock``). Ist das Feld
+    da, aber kein Objekt, ist es ein leeres: keine Art hat einen Hauspreis, nichts wird gekauft."""
+    block = _fakten(state, "market_buy")
+    if "house_prices" not in block:
+        return None
+    return _objekt(block["house_prices"])
+
+
+def _billigstes_angebot(state: GameState, art_passt: Callable[[Any], bool]) -> Any | None:
+    """Der EINE Preis-Kern beider Zweige (2.3.14, cos20 #765): das billigste Angebot einer Art,
+    die ``art_passt``, bezahlbar mit der ganzen Energie — und, wenn die Welt Hauspreise nennt,
+    nur bis zum Hauspreis der Art. Vorher nahm der Baum das einzige Angebot einer Art von jedem
+    Spieler bis zur ganzen Energie; ``reference_prices`` taugt nicht als Grenze, denn das
+    billigste Fremdangebot ist genau das Angebot, das geprueft wird."""
     energy = _energy(state)
+    hauspreise = _hauspreise(state)
     candidates = []
     for b in _market_buyable(state):
-        if allowed is not None:
-            if getattr(b, "item_type", None) not in allowed:
-                continue
+        art = getattr(b, "item_type", None)
+        if not art_passt(art):
+            continue
         price_f = _endlich(getattr(b, "price_energy", None))
         if price_f is None or price_f > energy:
             continue
+        if hauspreise is not None:
+            grenze = _endlich(hauspreise.get(art)) if isinstance(art, str) else None
+            if grenze is None or grenze <= 0 or price_f > grenze:
+                continue
         candidates.append((price_f, b))
     if not candidates:
         return None
     candidates.sort(key=lambda p: p[0])
     return candidates[0][1]
+
+
+def _cheapest_buyable(state: GameState, persona: str) -> Any | None:
+    allowed = PERSONA_BUYABLE_TYPES.get(persona, ("cube", "field"))
+    return _billigstes_angebot(state, lambda art: allowed is None or art in allowed)
 
 
 def _kauf_absichten(state: GameState) -> tuple[str, ...] | None:
@@ -749,19 +782,7 @@ def _gewolltes_buyable(state: GameState, persona: str) -> Any | None:
         return _cheapest_buyable(state, persona)
     if not absichten:
         return None
-    energy = _energy(state)
-    candidates = []
-    for b in _market_buyable(state):
-        if getattr(b, "item_type", None) not in absichten:
-            continue
-        price_f = _endlich(getattr(b, "price_energy", None))
-        if price_f is None or price_f > energy:
-            continue
-        candidates.append((price_f, b))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda p: p[0])
-    return candidates[0][1]
+    return _billigstes_angebot(state, lambda art: art in absichten)
 
 
 def resolve_action_params(state: GameState, action: str, persona: str) -> dict[str, Any]:
@@ -1394,7 +1415,7 @@ class TreeDecider:
     """
 
     name: str = "tree"
-    version: str = "2.3.13"
+    version: str = "2.3.14"
 
     async def decide(
         self, state: GameState, blocked: frozenset[str] = frozenset()
