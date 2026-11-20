@@ -35,7 +35,9 @@ FIELD = SimpleNamespace(
 )
 
 
-def _state(upgrade: dict[str, Any] | None, *, energy: float = 10_000, persona: str = "scientist") -> Any:
+def _state(
+    upgrade: dict[str, Any] | None, *, energy: float = 10_000, persona: str = "scientist"
+) -> Any:
     actions: dict[str, Any] = {"start_mission": {"available": False}}
     if upgrade is not None:
         actions["upgrade_field"] = upgrade
