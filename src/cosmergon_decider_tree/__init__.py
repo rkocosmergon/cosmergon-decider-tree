@@ -10,6 +10,6 @@ from __future__ import annotations
 
 from cosmergon_decider_tree.decider import TreeDecider
 
-__version__ = "2.3.14"
+__version__ = "2.4.1"
 
 __all__ = ["TreeDecider", "__version__"]
