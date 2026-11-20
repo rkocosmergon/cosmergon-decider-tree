@@ -1,13 +1,33 @@
 # cosmergon-decider-tree
 
-Rule-based tree decider for Cosmergon api-agents — deterministic, no
-inference, latency well under 10 ms.
+**The part that decides, without a model.**
 
-Implements the `Decider` protocol from `cosmergon-agent` 0.13.0+.
-The branch logic follows Cosmergon's default decision tree for api-agents; the
-thresholds are inspired by the conditional sequences of `cosmergon-pet`.
+An agent in [Cosmergon](https://cosmergon.com) is asked for a move again and again: plant cells,
+buy on the market, build up a field, or wait. This package gives it one in under 10 ms, from rules
+you can read: no inference, no key, no bill. It is what a
+[Shikigon](https://github.com/rkocosmergon/shikigon) and the terminal of
+[`cosmergon-agent`](https://github.com/rkocosmergon/cosmergon-agent) play with when no model is
+advising them.
 
-## Architektur
+```python
+from cosmergon_decider_tree import TreeDecider
+action, params = await TreeDecider().decide(state)
+```
+
+Six characters (scientist, warrior, expansionist, trader, diplomat, farmer), one compass you can
+turn, and since 2.4.2 it builds up its fields when the world offers that.
+
+It is fun, it is easy, and it never sends you a bill.
+
+## Install
+
+```bash
+pip install cosmergon-decider-tree
+```
+
+It implements the `Decider` protocol of `cosmergon-agent` 0.13.0 and later.
+
+## How it decides
 
 ```
 state (GameState)
@@ -18,51 +38,53 @@ PERSONA_TREES[persona]   (list of (condition, action_fn) tuples)
    │
    ├─ first matching condition wins
    ▼
-(action, params)           ← optional Compass-Modulation
+(action, params)           ← optionally turned by the compass
 ```
 
-Sechs Persona-Bäume (scientist / warrior / expansionist / trader /
-diplomat / farmer), gemeinsamer Survival-Header (critical-energy → wait,
-0-fields → create_field, empty-field → place_cells block) und
-gemeinsamer Wachstums-Fallback (fewest-cells, wait).
+Six persona trees share a survival header (critical energy: wait; no field: create one; an empty
+field: plant cells) and a growth fallback (the field with the fewest cells, then wait).
 
-## Usage
+## In a loop
 
 ```python
+import asyncio
+
+from cosmergon_agent import CosmergonAgent
 from cosmergon_decider_tree import TreeDecider
 
-decider = TreeDecider()  # no config — fully deterministic
+decider = TreeDecider()  # no configuration: fully deterministic
 
-# In runner-loop:
-async with CosmergonAgent(api_key=..., base_url="https://cosmergon.com") as agent:
-    while True:
-        await agent.refresh_state()
-        action, params = await decider.decide(agent.state)
-        await agent.act(action, **params)
-        await asyncio.sleep(90)
+
+async def main() -> None:
+    async with CosmergonAgent(api_key=..., base_url="https://cosmergon.com") as agent:
+        while True:
+            await agent.refresh_state()
+            action, params = await decider.decide(agent.state)
+            await agent.act(action, **params)
+            await asyncio.sleep(90)
+
+
+asyncio.run(main())
 ```
 
-## Vorteile
+## What it is good at
 
-- **Deterministisch:** identischer State → identische Action.
-- **Schnell:** <10 ms pro `decide()`-Call (lambda-evaluation, kein
-  Modell-Load).
-- **Interpretierbar:** Branch-Liste ist lesbar, Debug-fähig.
-- **Offline-fähig:** kein LLM-Provider, kein Modell-File, läuft auf
-  jedem ARM-Linux mit Python 3.10+.
+- **Deterministic.** The same state gives the same move.
+- **Fast.** Under 10 ms per `decide()`: conditions are evaluated, no model is loaded.
+- **Readable.** The branches are a list you can read and debug.
+- **Offline.** No model provider and no model file; it runs on any ARM Linux with Python 3.10
+  or later.
 
-## Begrenzung
+## Its limits
 
-- **Lernt nicht:** Cosmergon-Mechanik-Änderungen (neue Action-Klassen,
-  geänderte Konditions-Schwellen) brechen Tree → klare Versions-Bindung
-  an SDK + Backend-Stand.
-- **Persona-Bäume teils ähnlich:** Konzept §3.2 hat das adressiert,
-  Differenzierung muss strukturiert sichtbar sein.
+- **It follows the world's rules as they were when it was written.** A new kind of action or a
+  changed threshold in Cosmergon needs a new version of this package; each version is bound to a
+  state of the SDK and of the world.
+- **Some persona trees are alike.** They differ in what they prefer, less in what they can do.
 
 ## Tests
 
 ```bash
-cd research/decider-cluster/decider-tree
 pip install -e '.[dev]'
 pytest -q
 ```
