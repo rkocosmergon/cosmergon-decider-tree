@@ -96,11 +96,11 @@ def test_affordable_offer_is_valid_with_the_cheapest_offers_params() -> None:
 
 def test_offer_with_at_passes_at_on() -> None:
     """[red on 2.4.0]"""
-    z = _state(_offers(_offer("f1", "towers", 300, at=7), _offer("f2", "walls", 500)))
+    z = _state(_offers(_offer("f1", "towers", 300, at="s:8:8"), _offer("f2", "walls", 500)))
     assert resolve_action_params(z, "upgrade_field", "scientist") == {
         "field_id": "f1",
         "set": "towers",
-        "at": 7,
+        "at": "s:8:8",
     }
 
 
@@ -155,8 +155,8 @@ async def test_tree_chooses_upgrade_field_where_it_chose_market_list_before() ->
     an offer ``market_list`` wins. An offer gives ``upgrade_field`` 0.0 + 0.3 (the evolve bias)."""
     ohne = await TreeDecider().decide(_state(None))
     assert ohne[0] == "market_list"
-    mit = await TreeDecider().decide(_state(_offers(_offer("f1", "segments", 400, at=2))))
-    assert mit == ("upgrade_field", {"field_id": "f1", "set": "segments", "at": 2})
+    mit = await TreeDecider().decide(_state(_offers(_offer("f1", "segments", 400, at="s:2:3"))))
+    assert mit == ("upgrade_field", {"field_id": "f1", "set": "segments", "at": "s:2:3"})
 
 
 @pytest.mark.asyncio
@@ -172,3 +172,32 @@ async def test_in_subsistence_the_move_is_not_taken() -> None:
     z = _state(_offers(_offer("f1", "segments", 10)), energy=1_500)
     aktion, _ = await TreeDecider().decide(z)
     assert aktion != "upgrade_field"
+
+
+@pytest.mark.asyncio
+async def test_the_offer_as_read_in_production_is_taken() -> None:
+    """[red on 2.4.1] The block Root-storm got from production on 20.11.2026, word for word,
+    with its compass (attack), which favours ``place_cells``."""
+    block = {
+        "available": True,
+        "offers": [
+            {
+                "field_id": "d6400d5b-0000-0000-0000-000000000000",
+                "set": "fortify_core",
+                "price": 6400.0,
+                "at": "s:8:8",
+            }
+        ],
+    }
+    z = _state(block, energy=230_000)
+    z.compass_preset = "attack"
+    zug = await TreeDecider().decide(z)
+    assert zug == (
+        "upgrade_field",
+        {"field_id": "d6400d5b-0000-0000-0000-000000000000", "set": "fortify_core", "at": "s:8:8"},
+    )
+
+
+@pytest.mark.parametrize("at", [7, True, "", 1.5, ["s:8:8"]])
+def test_an_at_that_is_not_text_drops_the_offer(at: Any) -> None:
+    assert not is_valid(_state(_offers(_offer("f1", "towers", 300, at=at))), "upgrade_field")

@@ -1,4 +1,8 @@
-"""TreeDecider v2.4.1 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+"""TreeDecider v2.4.2 — Subsistenz + Persona-Charakter (GOBT-Pattern).
+
+v2.4.2 note (20.11.2026, cos20 #777): an ``upgrade_field`` offer names its place as text
+(``"at": "s:8:8"``), as the server sends it. 2.4.1 expected an integer, dropped every offer with
+a place, and so never built up a field in production.
 
 v2.4.1 note (20.11.2026, cos20 #777): ``upgrade_field`` (build up a field: segments, walls,
 towers). The server lists the offers in ``available_actions.upgrade_field`` (``available`` and
@@ -474,7 +478,9 @@ def _billigstes_ausbau(state: GameState) -> tuple[dict[str, Any], float] | None:
         params: dict[str, Any] = {"field_id": field_id, "set": set_name}
         at = offer.get("at")
         if at is not None:
-            if isinstance(at, bool) or not isinstance(at, int):
+            # 2.4.2: the server names the place as text ("s:8:8"); 2.4.1 expected an integer
+            # and so dropped every offer that carried a place.
+            if not isinstance(at, str) or not at:
                 continue
             params["at"] = at
         if best is None or price < best[0]:
@@ -1495,7 +1501,7 @@ class TreeDecider:
     """
 
     name: str = "tree"
-    version: str = "2.4.1"
+    version: str = "2.4.2"
 
     def __init__(self, store: Any | None = None) -> None:
         """``store``: where the agent keeps its experience (cos20 #749).
